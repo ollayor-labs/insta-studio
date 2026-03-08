@@ -35,27 +35,55 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
   onZoomChange,
   isProcessing,
 }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const baseCanvasRef = useRef<HTMLCanvasElement>(null);
+  const revealCanvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number>(0);
+  const revealRafRef = useRef<number>(0);
+  const revealTimeoutRef = useRef<number>(0);
   const activePointersRef = useRef<Map<number, { x: number; y: number; type: string }>>(new Map());
   const pinchStartRef = useRef<{ distance: number; zoom: number } | null>(null);
-  const [switching, setSwitching] = useState(false);
+  const [stableFrame, setStableFrame] = useState<ImageData | null>(null);
+  const [transitionSource, setTransitionSource] = useState<ImageData | null>(null);
+  const [revealFrame, setRevealFrame] = useState<ImageData | null>(null);
+  const [revealRadius, setRevealRadius] = useState(0);
   const previousFilterRef = useRef(filterName);
+  const transitionEnabled = !compareMode && !showBefore;
+
+  const clearReveal = useCallback(() => {
+    window.cancelAnimationFrame(revealRafRef.current);
+    window.clearTimeout(revealTimeoutRef.current);
+    setRevealFrame(null);
+    setRevealRadius(0);
+  }, []);
 
   useEffect(() => {
-    if (previousFilterRef.current !== filterName) {
+    return () => {
+      window.cancelAnimationFrame(revealRafRef.current);
+      window.clearTimeout(revealTimeoutRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!sourceImageData) {
+      setStableFrame(null);
+      setTransitionSource(null);
+      clearReveal();
       previousFilterRef.current = filterName;
-      setSwitching(true);
-      const timeout = window.setTimeout(() => setSwitching(false), 100);
-      return () => window.clearTimeout(timeout);
+      return;
     }
-  }, [filterName]);
+
+    previousFilterRef.current = filterName;
+    setStableFrame(filteredImageData ?? sourceImageData);
+    setTransitionSource(null);
+    clearReveal();
+  }, [clearReveal, filterName, filteredImageData, image, sourceImageData]);
 
   useEffect(() => {
-    const canvas = canvasRef.current;
+    const baseCanvas = baseCanvasRef.current;
+    const revealCanvas = revealCanvasRef.current;
     const stage = stageRef.current;
-    if (!canvas || !stage || !image) return;
+    if (!baseCanvas || !stage || !image) return;
 
     const maxWidth = 1200;
     const maxHeight = 800;
@@ -63,14 +91,34 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
     const displayWidth = image.width * scale * (zoom / 100);
     const displayHeight = image.height * scale * (zoom / 100);
 
-    canvas.style.setProperty("--filtr-canvas-width", `${displayWidth}px`);
-    canvas.style.setProperty("--filtr-canvas-height", `${displayHeight}px`);
-    canvas.style.setProperty("--filtr-image-rendering", zoom > 175 ? "pixelated" : "auto");
+    baseCanvas.style.setProperty("--filtr-canvas-width", `${displayWidth}px`);
+    baseCanvas.style.setProperty("--filtr-canvas-height", `${displayHeight}px`);
+    baseCanvas.style.setProperty("--filtr-image-rendering", zoom > 175 ? "pixelated" : "auto");
+    revealCanvas?.style.setProperty("--filtr-canvas-width", `${displayWidth}px`);
+    revealCanvas?.style.setProperty("--filtr-canvas-height", `${displayHeight}px`);
+    revealCanvas?.style.setProperty("--filtr-image-rendering", zoom > 175 ? "pixelated" : "auto");
     stage.style.setProperty("--filtr-compare-position", `${comparePosition}%`);
   }, [comparePosition, image, zoom]);
 
-  const render = useCallback(() => {
-    const canvas = canvasRef.current;
+  const drawSingleFrame = useCallback((canvas: HTMLCanvasElement | null, frame: ImageData | null) => {
+    if (!canvas) return;
+
+    const context = canvas.getContext("2d");
+    if (!context) return;
+
+    if (!frame) {
+      context.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+
+    canvas.width = frame.width;
+    canvas.height = frame.height;
+
+    context.clearRect(0, 0, frame.width, frame.height);
+    context.putImageData(frame, 0, 0);
+  }, []);
+
+  const drawCompositeFrame = useCallback((canvas: HTMLCanvasElement | null) => {
     const source = sourceImageData;
     if (!canvas || !source) return;
 
@@ -94,6 +142,69 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
       context.putImageData(source, 0, 0, 0, 0, splitX, source.height);
     }
   }, [compareMode, comparePosition, filteredImageData, showBefore, sourceImageData]);
+
+  useEffect(() => {
+    if (!transitionEnabled) {
+      clearReveal();
+      setTransitionSource(null);
+      setStableFrame(filteredImageData ?? sourceImageData);
+    }
+  }, [clearReveal, filteredImageData, sourceImageData, transitionEnabled]);
+
+  useEffect(() => {
+    if (!transitionEnabled || previousFilterRef.current === filterName) return;
+
+    previousFilterRef.current = filterName;
+    const currentFrame = revealFrame ?? stableFrame ?? filteredImageData ?? sourceImageData;
+    if (!currentFrame) return;
+
+    clearReveal();
+    setTransitionSource(currentFrame);
+  }, [clearReveal, filterName, filteredImageData, revealFrame, sourceImageData, stableFrame, transitionEnabled]);
+
+  useEffect(() => {
+    if (!transitionEnabled || transitionSource || isProcessing) return;
+    setStableFrame(filteredImageData ?? sourceImageData);
+  }, [filteredImageData, isProcessing, sourceImageData, stableFrame, transitionEnabled, transitionSource]);
+
+  useEffect(() => {
+    if (!transitionEnabled || !transitionSource || isProcessing || !filteredImageData) return;
+
+    clearReveal();
+    setRevealFrame(filteredImageData);
+    setRevealRadius(0);
+
+    revealRafRef.current = window.requestAnimationFrame(() => setRevealRadius(150));
+    revealTimeoutRef.current = window.setTimeout(() => {
+      setStableFrame(filteredImageData);
+      setTransitionSource(null);
+      clearReveal();
+    }, 560);
+  }, [clearReveal, filteredImageData, isProcessing, transitionEnabled, transitionSource]);
+
+  const render = useCallback(() => {
+    const baseCanvas = baseCanvasRef.current;
+    const revealCanvas = revealCanvasRef.current;
+    if (!baseCanvas || !sourceImageData) return;
+
+    if (!transitionEnabled) {
+      drawCompositeFrame(baseCanvas);
+      drawSingleFrame(revealCanvas, null);
+      return;
+    }
+
+    drawSingleFrame(baseCanvas, transitionSource ?? stableFrame ?? filteredImageData ?? sourceImageData);
+    drawSingleFrame(revealCanvas, revealFrame);
+  }, [
+    drawCompositeFrame,
+    drawSingleFrame,
+    filteredImageData,
+    revealFrame,
+    sourceImageData,
+    stableFrame,
+    transitionEnabled,
+    transitionSource,
+  ]);
 
   useEffect(() => {
     window.cancelAnimationFrame(rafRef.current);
@@ -176,6 +287,25 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
 
   if (!image || !sourceImageData) return null;
 
+  const magicActive = transitionEnabled && Boolean(transitionSource);
+  const revealActive = magicActive && Boolean(revealFrame);
+  const baseCanvasStyle = magicActive
+    ? {
+        filter: revealActive ? "blur(14px) saturate(0.88) brightness(0.88)" : "blur(18px) saturate(0.82) brightness(0.84)",
+        transform: revealActive ? "scale(1.01)" : "scale(1.018)",
+      }
+    : undefined;
+  const revealCanvasStyle = revealActive
+    ? {
+        clipPath: `circle(${revealRadius}% at 50% 50%)`,
+        filter: revealRadius > 1 ? "blur(0px) saturate(1)" : "blur(18px) saturate(1.08)",
+        transform: revealRadius > 1 ? "scale(1)" : "scale(1.035)",
+        opacity: 1,
+        transitionDuration: "560ms",
+        transitionTimingFunction: "cubic-bezier(0.22, 1, 0.36, 1)",
+      }
+    : undefined;
+
   return (
     <div className="flex-1 flex items-center justify-center overflow-auto p-4">
       <div
@@ -187,11 +317,22 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
         onPointerCancel={handlePointerUp}
       >
         <canvas
-          ref={canvasRef}
-          className={`filtr-main-canvas rounded-lg shadow-2xl transition-opacity duration-100 ${
-            switching ? "opacity-70" : "opacity-100"
-          }`}
+          ref={baseCanvasRef}
+          className="filtr-main-canvas rounded-lg shadow-2xl transition-[filter,transform] duration-500 ease-out"
+          style={baseCanvasStyle}
         />
+        <canvas
+          ref={revealCanvasRef}
+          className={`filtr-overlay-canvas rounded-lg shadow-[0_0_40px_rgba(255,153,72,0.18)] transition-[clip-path,filter,transform,opacity] ${
+            revealActive ? "opacity-100" : "opacity-0"
+          }`}
+          style={revealCanvasStyle}
+        />
+        {magicActive ? (
+          <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-lg">
+            <div className="filtr-render-aura absolute inset-[12%] rounded-[28px]" />
+          </div>
+        ) : null}
         {compareMode && !showBefore ? (
           <div className="pointer-events-none absolute inset-y-0 z-10 left-[var(--filtr-compare-position)] -translate-x-1/2">
             <div className="relative h-full">
@@ -206,9 +347,14 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
           </div>
         ) : null}
         {isProcessing ? (
-          <div className="pointer-events-none absolute bottom-4 right-4 rounded-full bg-background/85 px-3 py-1 font-mono-ui text-[10px] uppercase tracking-[0.14em] text-foreground shadow-lg">
-            Rendering
-          </div>
+          <>
+            <div className="pointer-events-none absolute bottom-4 right-4 rounded-full border border-white/10 bg-background/80 px-3 py-1 font-mono-ui text-[10px] uppercase tracking-[0.18em] text-foreground shadow-lg backdrop-blur-md">
+              Rendering
+            </div>
+            <div className="pointer-events-none absolute left-4 top-4 rounded-full border border-white/10 bg-background/70 px-3 py-1 font-mono-ui text-[10px] uppercase tracking-[0.18em] text-primary shadow-lg backdrop-blur-md">
+              {filterName}
+            </div>
+          </>
         ) : null}
       </div>
     </div>

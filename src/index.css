@@ -165,10 +165,30 @@
     height: var(--filtr-canvas-height, auto);
     image-rendering: var(--filtr-image-rendering, auto);
   }
+
+  .filtr-overlay-canvas {
+    @apply absolute inset-0 pointer-events-none;
+    width: var(--filtr-canvas-width, auto);
+    height: var(--filtr-canvas-height, auto);
+    image-rendering: var(--filtr-image-rendering, auto);
+  }
+
+  .filtr-render-aura {
+    background:
+      radial-gradient(circle at 50% 50%, hsl(var(--filtr-amber) / 0.34), transparent 48%),
+      radial-gradient(circle at 50% 50%, hsl(var(--filtr-amber-glow) / 0.2), transparent 70%);
+    mix-blend-mode: screen;
+    animation: filtr-render-pulse 1.2s ease-in-out infinite;
+  }
 }
 
 @keyframes filtr-shimmer {
   0% { opacity: 0.6; filter: brightness(1.3); }
   50% { opacity: 0.9; filter: brightness(1.15); }
   100% { opacity: 1; filter: brightness(1); }
+}
+
+@keyframes filtr-render-pulse {
+  0%, 100% { opacity: 0.28; transform: scale(0.96); }
+  50% { opacity: 0.72; transform: scale(1.02); }
 }
