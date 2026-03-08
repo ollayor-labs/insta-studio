@@ -41,7 +41,7 @@ function formatTimestamp(date = new Date()): string {
 
 function createExportName(filterName: string, format: ExportFormat): string {
   const extension = format === "png" ? "png" : "jpg";
-  return `FILTR_${filterName.toLowerCase().replace(/\s+/g, "_")}_${formatTimestamp()}.${extension}`;
+  return `insta-studio_${filterName.toLowerCase().replace(/\s+/g, "_")}_${formatTimestamp()}.${extension}`;
 }
 
 function createCanvas(width: number, height: number): RenderCanvas {
@@ -91,7 +91,7 @@ function applyWatermark(canvas: RenderCanvas): void {
   context.textAlign = "right";
   context.textBaseline = "bottom";
   context.font = `${Math.max(14, Math.round(width * 0.022))}px "DM Mono", monospace`;
-  context.fillText("FILTR", width - Math.max(18, width * 0.025), height - Math.max(18, height * 0.025));
+  context.fillText("insta-studio", width - Math.max(18, width * 0.025), height - Math.max(18, height * 0.025));
   context.restore();
 }
 

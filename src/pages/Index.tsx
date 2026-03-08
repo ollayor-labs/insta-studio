@@ -18,6 +18,8 @@ import ImageCanvas from "@/components/ImageCanvas";
 import BottomBar from "@/components/BottomBar";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
 
+const brandMarkSrc = "/brand/logo-mark.png";
+
 function isTypingTarget(target: EventTarget | null): boolean {
   return (
     target instanceof HTMLInputElement ||
@@ -174,7 +176,8 @@ const Index = () => {
       <div className="min-h-screen flex flex-col bg-background">
         <header className="h-14 border-b border-border flex items-center justify-between px-6">
           <div className="flex items-center gap-3">
-            <h1 className="font-display text-xl tracking-tight text-foreground">FILTR</h1>
+            <img src={brandMarkSrc} alt="insta-studio logo" className="h-8 w-8 shrink-0" />
+            <h1 className="font-display text-xl tracking-tight text-foreground">insta-studio</h1>
             <span className="font-mono-ui text-[10px] text-muted-foreground tracking-widest uppercase">
               Photo Filter Studio
             </span>
@@ -200,7 +203,8 @@ const Index = () => {
     <div className="h-screen flex flex-col bg-background overflow-hidden">
       <header className="h-12 border-b border-border flex items-center justify-between px-4 shrink-0">
         <div className="flex items-center gap-3">
-          <h1 className="font-display text-lg tracking-tight text-foreground">FILTR</h1>
+          <img src={brandMarkSrc} alt="insta-studio logo" className="h-7 w-7 shrink-0" />
+          <h1 className="font-display text-lg tracking-tight text-foreground">insta-studio</h1>
           <span className="hidden sm:inline font-mono-ui text-[10px] text-muted-foreground tracking-widest uppercase">
             {fileName}
           </span>

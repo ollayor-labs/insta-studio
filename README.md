@@ -1,4 +1,4 @@
-# FILTR Studio
+# insta-studio
 
 Premium image filter studio built with React, TypeScript, and a modular canvas-based grading engine.
 
@@ -18,7 +18,7 @@ npm run build
 
 ## Product Direction
 
-FILTR is focused on realistic, premium, social-ready image grading:
+insta-studio is focused on realistic, premium, social-ready image grading:
 
 - premium presets instead of loud novelty effects
 - scene-aware adaptation for portraits, bright scenes, low-light images, indoor photos, and already-colorful files
