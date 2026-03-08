@@ -1,107 +1,167 @@
-import React, { useCallback, useRef, useState } from "react";
-import { Download, Copy, Eye, EyeOff, ZoomIn, ZoomOut } from "lucide-react";
-import { applyFilter, Adjustments, defaultAdjustments } from "@/lib/filterEngine";
+import React, { useCallback, useState } from "react";
+import { Copy, Download, Eye, EyeOff, SplitSquareVertical, ZoomIn, ZoomOut } from "lucide-react";
+import {
+  applyFilter,
+  createImageDataFromImage,
+  type Adjustments,
+  type ImageAnalysis,
+} from "@/lib/filterEngine";
+import {
+  showCopyFailedToast,
+  showCopyToast,
+  showDownloadToast,
+} from "@/lib/editorToasts";
 
 interface BottomBarProps {
   image: HTMLImageElement | null;
   filterName: string;
+  filterStrength: number;
+  analysis: ImageAnalysis | null;
   adjustments: Adjustments;
   fileName: string;
   showBefore: boolean;
   onToggleBefore: () => void;
+  compareMode: boolean;
+  onCompareModeChange: (value: boolean) => void;
+  comparePosition: number;
+  onComparePositionChange: (value: number) => void;
   zoom: number;
-  onZoomChange: (z: number) => void;
+  onZoomChange: (value: number) => void;
 }
 
 const BottomBar: React.FC<BottomBarProps> = ({
-  image, filterName, adjustments, fileName,
-  showBefore, onToggleBefore, zoom, onZoomChange,
+  image,
+  filterName,
+  filterStrength,
+  analysis,
+  adjustments,
+  fileName,
+  showBefore,
+  onToggleBefore,
+  compareMode,
+  onCompareModeChange,
+  comparePosition,
+  onComparePositionChange,
+  zoom,
+  onZoomChange,
 }) => {
   const [quality, setQuality] = useState(92);
   const [copying, setCopying] = useState(false);
 
   const getExportCanvas = useCallback(() => {
     if (!image) return null;
+
+    const original = createImageDataFromImage(image);
     const canvas = document.createElement("canvas");
-    canvas.width = image.width;
-    canvas.height = image.height;
-    const ctx = canvas.getContext("2d")!;
-    ctx.drawImage(image, 0, 0);
-    const original = ctx.getImageData(0, 0, image.width, image.height);
-    const filtered = applyFilter(original, filterName, adjustments, image.width, image.height);
-    ctx.putImageData(filtered, 0, 0);
+    canvas.width = original.width;
+    canvas.height = original.height;
+
+    const context = canvas.getContext("2d");
+    if (!context) return null;
+
+    const filtered = applyFilter(original, filterName, adjustments, original.width, original.height, {
+      analysis,
+      quality: "export",
+      strength: filterStrength,
+    });
+    context.putImageData(filtered, 0, 0);
     return canvas;
-  }, [image, filterName, adjustments]);
+  }, [image, filterName, filterStrength, analysis, adjustments]);
 
   const handleDownload = useCallback(() => {
     const canvas = getExportCanvas();
     if (!canvas) return;
-    const base = fileName.replace(/\.[^.]+$/, "");
-    const ts = Date.now();
-    const name = `${base}_${filterName.toLowerCase().replace(/\s/g, "_")}_${ts}.jpg`;
+
+    const baseName = fileName.replace(/\.[^.]+$/, "");
+    const timestamp = Date.now();
+    const exportName = `${baseName}_${filterName.toLowerCase().replace(/\s/g, "_")}_${timestamp}.jpg`;
     const link = document.createElement("a");
-    link.download = name;
+    link.download = exportName;
     link.href = canvas.toDataURL("image/jpeg", quality / 100);
     link.click();
-  }, [getExportCanvas, fileName, filterName, quality]);
+    showDownloadToast(filterName);
+  }, [fileName, filterName, getExportCanvas, quality]);
 
   const handleCopy = useCallback(async () => {
     const canvas = getExportCanvas();
     if (!canvas) return;
+
     setCopying(true);
+
     try {
-      const blob = await new Promise<Blob>((res) =>
-        canvas.toBlob((b) => res(b!), "image/png")
-      );
+      const blob = await new Promise<Blob>((resolve) => {
+        canvas.toBlob((value) => resolve(value as Blob), "image/png");
+      });
       await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
-    } catch (e) {
-      console.error("Copy failed", e);
+      showCopyToast();
+    } catch (error) {
+      console.error("Copy failed", error);
+      showCopyFailedToast();
     }
-    setTimeout(() => setCopying(false), 1500);
+
+    window.setTimeout(() => setCopying(false), 1500);
   }, [getExportCanvas]);
 
   return (
-    <div className="h-12 border-t border-border bg-card flex items-center justify-between px-4 gap-4">
-      {/* Left: Before/After */}
+    <div className="min-h-12 border-t border-border bg-card flex flex-wrap items-center justify-between px-4 py-2 gap-4">
       <div className="flex items-center gap-3">
         <button
           onClick={onToggleBefore}
           className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors font-mono-ui text-[11px]"
         >
           {showBefore ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-          {showBefore ? "Before" : "After"}
+          {showBefore ? "Original" : "Edited"}
         </button>
-        <span className="text-muted-foreground/30 font-mono-ui text-[10px]">
-          <kbd className="px-1 py-0.5 rounded border border-border bg-secondary text-[9px]">Space</kbd>
-        </span>
+
+        <button
+          onClick={() => onCompareModeChange(!compareMode)}
+          className={`flex items-center gap-1.5 font-mono-ui text-[11px] transition-colors ${
+            compareMode ? "text-primary" : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          <SplitSquareVertical className="w-3.5 h-3.5" />
+          Compare
+        </button>
+
+        {compareMode ? (
+          <span className="font-mono-ui text-[10px] text-muted-foreground uppercase tracking-[0.14em]">
+            Drag slider on image
+          </span>
+        ) : null}
       </div>
 
-      {/* Center: Zoom */}
       <div className="flex items-center gap-2">
-        <button onClick={() => onZoomChange(Math.max(25, zoom - 25))} className="text-muted-foreground hover:text-foreground transition-colors">
+        <button
+          onClick={() => onZoomChange(Math.max(25, zoom - 25))}
+          className="text-muted-foreground hover:text-foreground transition-colors"
+        >
           <ZoomOut className="w-3.5 h-3.5" />
         </button>
         <span className="font-mono-ui text-[11px] text-secondary-foreground tabular-nums w-10 text-center">
           {zoom}%
         </span>
-        <button onClick={() => onZoomChange(Math.min(400, zoom + 25))} className="text-muted-foreground hover:text-foreground transition-colors">
+        <button
+          onClick={() => onZoomChange(Math.min(400, zoom + 25))}
+          className="text-muted-foreground hover:text-foreground transition-colors"
+        >
           <ZoomIn className="w-3.5 h-3.5" />
         </button>
       </div>
 
-      {/* Right: Export */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap justify-end">
         <div className="flex items-center gap-1.5">
-          <span className="font-mono-ui text-[10px] text-muted-foreground">Q:</span>
+          <span className="font-mono-ui text-[10px] text-muted-foreground">Q</span>
           <input
             type="range"
             min={60}
             max={100}
             value={quality}
-            onChange={(e) => setQuality(Number(e.target.value))}
+            onChange={(event) => setQuality(Number(event.target.value))}
             className="filtr-slider w-16"
           />
-          <span className="font-mono-ui text-[10px] text-secondary-foreground tabular-nums w-6">{quality}%</span>
+          <span className="font-mono-ui text-[10px] text-secondary-foreground tabular-nums w-8">
+            {quality}%
+          </span>
         </div>
 
         <button
@@ -109,7 +169,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-secondary text-secondary-foreground hover:bg-muted transition-colors font-mono-ui text-[11px]"
         >
           <Copy className="w-3 h-3" />
-          {copying ? "Copied!" : "Copy"}
+          {copying ? "Copied" : "Copy"}
         </button>
 
         <button

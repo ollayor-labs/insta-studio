@@ -1,73 +1,74 @@
-# Welcome to your Lovable project
+# FILTR Studio
 
-## Project info
+Premium image filter studio built with React, TypeScript, and a modular canvas-based grading engine.
 
-**URL**: https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID
-
-## How can I edit this code?
-
-There are several ways of editing your application.
-
-**Use Lovable**
-
-Simply visit the [Lovable Project](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and start prompting.
-
-Changes made via Lovable will be committed automatically to this repo.
-
-**Use your preferred IDE**
-
-If you want to work locally using your own IDE, you can clone this repo and push changes. Pushed changes will also be reflected in Lovable.
-
-The only requirement is having Node.js & npm installed - [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating)
-
-Follow these steps:
+## Development
 
 ```sh
-# Step 1: Clone the repository using the project's Git URL.
-git clone <YOUR_GIT_URL>
-
-# Step 2: Navigate to the project directory.
-cd <YOUR_PROJECT_NAME>
-
-# Step 3: Install the necessary dependencies.
-npm i
-
-# Step 4: Start the development server with auto-reloading and an instant preview.
+npm install
 npm run dev
 ```
 
-**Edit a file directly in GitHub**
+Validation:
 
-- Navigate to the desired file(s).
-- Click the "Edit" button (pencil icon) at the top right of the file view.
-- Make your changes and commit the changes.
+```sh
+npm test
+npm run build
+```
 
-**Use GitHub Codespaces**
+## Product Direction
 
-- Navigate to the main page of your repository.
-- Click on the "Code" button (green button) near the top right.
-- Select the "Codespaces" tab.
-- Click on "New codespace" to launch a new Codespace environment.
-- Edit files directly within the Codespace and commit and push your changes once you're done.
+FILTR is focused on realistic, premium, social-ready image grading:
 
-## What technologies are used for this project?
+- premium presets instead of loud novelty effects
+- scene-aware adaptation for portraits, bright scenes, low-light images, indoor photos, and already-colorful files
+- consistent results across lifestyle, food, portrait, street, and indoor imagery
+- clean preset strength control and compare workflows
 
-This project is built with:
+## Architecture
 
-- Vite
-- TypeScript
-- React
-- shadcn-ui
-- Tailwind CSS
+The filter engine now lives under [`src/lib/filter-engine`](/Users/ollayor/Code/Projects/filtr-studio/src/lib/filter-engine):
 
-## How can I deploy this project?
+- [`types.ts`](/Users/ollayor/Code/Projects/filtr-studio/src/lib/filter-engine/types.ts): core adjustment, preset, analysis, and recommendation types
+- [`presets.ts`](/Users/ollayor/Code/Projects/filtr-studio/src/lib/filter-engine/presets.ts): premium preset definitions, scene affinity, moods, and rationale
+- [`analysis.ts`](/Users/ollayor/Code/Projects/filtr-studio/src/lib/filter-engine/analysis.ts): fast image-scene analysis used for adaptive grading and recommendations
+- [`renderer.ts`](/Users/ollayor/Code/Projects/filtr-studio/src/lib/filter-engine/renderer.ts): composable execution pipeline for tonal work, color work, detail, bloom, grain, and vignette
+- [`recommendation.ts`](/Users/ollayor/Code/Projects/filtr-studio/src/lib/filter-engine/recommendation.ts): best-match scoring for presets
+- [`storage.ts`](/Users/ollayor/Code/Projects/filtr-studio/src/lib/filter-engine/storage.ts): local-storage architecture for custom presets
+- [`raster.ts`](/Users/ollayor/Code/Projects/filtr-studio/src/lib/filter-engine/raster.ts): shared image raster extraction helpers
 
-Simply open [Lovable](https://lovable.dev/projects/REPLACE_WITH_PROJECT_ID) and click on Share -> Publish.
+The legacy facade at [`src/lib/filterEngine.ts`](/Users/ollayor/Code/Projects/filtr-studio/src/lib/filterEngine.ts) remains as the compatibility entrypoint for the UI.
 
-## Can I connect a custom domain to my Lovable project?
+## Rendering Model
 
-Yes, you can!
+Each render pass follows this order:
 
-To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
+1. Resolve preset definition, preset strength, manual adjustments, and scene adaptation.
+2. Apply tonal shaping: brightness, contrast, highlights, shadows, whites, blacks.
+3. Apply color shaping: temperature, tint, saturation, vibrance, HSL, tone curve, split toning.
+4. Apply detail passes only when needed: clarity, sharpness, bloom.
+5. Apply finishing passes: fade, grain, vignette.
 
-Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+This keeps preset definitions declarative and makes the execution path easier to extend.
+
+## Performance Notes
+
+- The editor uses a preview raster capped to a maximum dimension for interactive rendering.
+- Export uses the full-resolution raster and the higher-quality render path.
+- Scene analysis is computed once per loaded image and reused for preview, swatches, recommendations, and export.
+- Expensive passes like bloom and detail enhancement only run when their adjustment values are non-zero.
+
+## Tests
+
+Critical engine behavior is covered in [`src/test/filter-engine.test.ts`](/Users/ollayor/Code/Projects/filtr-studio/src/test/filter-engine.test.ts):
+
+- zero-strength preset neutrality
+- preset-strength scaling
+- portrait-aware recommendation scoring
+- monochrome output integrity
+
+## Known Follow-Up
+
+- The app-level ESLint run currently fails because of pre-existing issues in scaffolded UI files outside the filter-engine work.
+- Custom preset persistence is implemented at the architecture layer but not yet surfaced in the UI.
+- The renderer is still CPU/canvas based; GPU acceleration should only be considered after profiling larger export workloads.
