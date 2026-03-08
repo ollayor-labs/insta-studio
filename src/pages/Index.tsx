@@ -1,11 +1,4 @@
-import React, {
-  startTransition,
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import React, { startTransition, useCallback, useEffect, useMemo, useState } from "react";
 import {
   type Adjustments,
   analyzeImageData,
@@ -17,17 +10,29 @@ import {
   type PresetRecommendation,
 } from "@/lib/filterEngine";
 import { showFilterChangedToast } from "@/lib/editorToasts";
+import { useFilter } from "@/hooks/useFilter";
 import DropZone from "@/components/DropZone";
 import FilterSidebar from "@/components/FilterSidebar";
 import AdjustmentsPanel from "@/components/AdjustmentsPanel";
 import ImageCanvas from "@/components/ImageCanvas";
 import BottomBar from "@/components/BottomBar";
+import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
+
+function isTypingTarget(target: EventTarget | null): boolean {
+  return (
+    target instanceof HTMLInputElement ||
+    target instanceof HTMLTextAreaElement ||
+    target instanceof HTMLSelectElement ||
+    Boolean(target instanceof HTMLElement && target.isContentEditable)
+  );
+}
 
 const Index = () => {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [fileName, setFileName] = useState("");
   const [activeFilter, setActiveFilter] = useState("Original");
   const [filterStrength, setFilterStrength] = useState(100);
+  const [effectIntensity, setEffectIntensity] = useState(100);
   const [adjustments, setAdjustments] = useState<Adjustments>({ ...defaultAdjustments });
   const [imageAnalysis, setImageAnalysis] = useState<ReturnType<typeof analyzeImageData> | null>(null);
   const [recommendations, setRecommendations] = useState<PresetRecommendation[]>([]);
@@ -35,6 +40,7 @@ const Index = () => {
   const [compareMode, setCompareMode] = useState(false);
   const [comparePosition, setComparePosition] = useState(50);
   const [zoom, setZoom] = useState(100);
+  const [exportSignal, setExportSignal] = useState(0);
 
   const activePreset = useMemo(() => getFilterPreset(activeFilter), [activeFilter]);
   const recommendedPresetIds = useMemo(
@@ -42,19 +48,26 @@ const Index = () => {
     [recommendations],
   );
   const activeRecommendation = useMemo(
-    () => recommendations.find((recommendation) => getFilterPreset(activeFilter).id === recommendation.presetId),
-    [activeFilter, recommendations],
+    () => recommendations.find((recommendation) => activePreset.id === recommendation.presetId),
+    [activePreset.id, recommendations],
   );
 
-  const deferredAdjustments = useDeferredValue(adjustments);
-  const deferredFilterStrength = useDeferredValue(filterStrength);
-  const deferredActiveFilter = useDeferredValue(activeFilter);
+  const { filteredImageData, sourceImageData, fullImageData, isProcessing } = useFilter({
+    image,
+    filterName: activeFilter,
+    adjustments,
+    filterStrength,
+    effectIntensity,
+    analysis: imageAnalysis,
+    useFullResolution: zoom > 150,
+  });
 
   const handleImageLoad = useCallback((img: HTMLImageElement, name: string) => {
     setImage(img);
     setFileName(name);
     setActiveFilter("Original");
     setFilterStrength(100);
+    setEffectIntensity(100);
     setAdjustments({ ...defaultAdjustments });
     setShowBefore(false);
     setCompareMode(false);
@@ -67,19 +80,33 @@ const Index = () => {
   }, []);
 
   const handleReset = useCallback(() => {
+    const preset = getFilterPreset(activeFilter);
     setAdjustments({ ...defaultAdjustments });
-  }, []);
+    setFilterStrength(Math.round(preset.defaultStrength * 100));
+    setEffectIntensity(100);
+  }, [activeFilter]);
 
   const handleFilterChange = useCallback((name: string) => {
     const preset = getFilterPreset(name);
     startTransition(() => {
       setActiveFilter(name);
       setFilterStrength(Math.round(preset.defaultStrength * 100));
+      setEffectIntensity(100);
       setAdjustments({ ...defaultAdjustments });
       setCompareMode(false);
     });
     showFilterChangedToast(name, Math.round(preset.defaultStrength * 100));
   }, []);
+
+  const cycleFilter = useCallback(
+    (direction: -1 | 1) => {
+      const names = FILTER_PRESETS.map((preset) => preset.name);
+      const currentIndex = names.indexOf(activeFilter);
+      const nextName = names[(currentIndex + direction + names.length) % names.length];
+      handleFilterChange(nextName);
+    },
+    [activeFilter, handleFilterChange],
+  );
 
   useEffect(() => {
     if (!image) {
@@ -94,35 +121,53 @@ const Index = () => {
   }, [image]);
 
   useEffect(() => {
-    const handler = (event: KeyboardEvent) => {
-      if (event.target instanceof HTMLInputElement) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (isTypingTarget(event.target)) return;
 
       if (event.code === "Space") {
         event.preventDefault();
-        setShowBefore((value) => !value);
+        if (!event.repeat) setShowBefore(true);
         return;
       }
 
-      if (event.key === "[" || event.key === "]") {
-        const names = FILTER_PRESETS.map((preset) => preset.name);
-        const currentIndex = names.indexOf(activeFilter);
-        const nextName =
-          event.key === "["
-            ? names[(currentIndex - 1 + names.length) % names.length]
-            : names[(currentIndex + 1) % names.length];
-        const preset = getFilterPreset(nextName);
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        cycleFilter(-1);
+        return;
+      }
 
-        startTransition(() => {
-          setActiveFilter(nextName);
-          setFilterStrength(Math.round(preset.defaultStrength * 100));
-          setAdjustments({ ...defaultAdjustments });
-        });
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        cycleFilter(1);
+        return;
+      }
+
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        setExportSignal((value) => value + 1);
+        return;
+      }
+
+      if (event.key.toLowerCase() === "r") {
+        event.preventDefault();
+        handleReset();
       }
     };
 
-    window.addEventListener("keydown", handler);
-    return () => window.removeEventListener("keydown", handler);
-  }, [activeFilter]);
+    const handleKeyUp = (event: KeyboardEvent) => {
+      if (event.code === "Space") {
+        event.preventDefault();
+        setShowBefore(false);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [cycleFilter, handleReset]);
 
   if (!image) {
     return (
@@ -144,7 +189,7 @@ const Index = () => {
 
         <footer className="h-10 border-t border-border flex items-center justify-center">
           <p className="font-mono-ui text-[10px] text-muted-foreground/40 tracking-wider">
-            [ ] cycle filters · Space before/after · premium adaptive presets
+            Arrow keys cycle · hold Space for original · Ctrl/Cmd+S exports · R resets
           </p>
         </footer>
       </div>
@@ -187,15 +232,16 @@ const Index = () => {
 
         <ImageCanvas
           image={image}
-          filterName={deferredActiveFilter}
-          filterStrength={deferredFilterStrength}
-          adjustments={deferredAdjustments}
-          analysis={imageAnalysis}
+          filterName={activeFilter}
+          sourceImageData={sourceImageData}
+          filteredImageData={filteredImageData}
           showBefore={showBefore}
           compareMode={compareMode}
           comparePosition={comparePosition}
           onComparePositionChange={setComparePosition}
           zoom={zoom}
+          onZoomChange={setZoom}
+          isProcessing={isProcessing}
         />
 
         <div className="w-64 lg:w-80 border-l border-border shrink-0 overflow-hidden hidden md:block">
@@ -204,20 +250,24 @@ const Index = () => {
             recommendation={activeRecommendation}
             adjustments={adjustments}
             filterStrength={filterStrength}
+            effectIntensity={effectIntensity}
             onFilterStrengthChange={setFilterStrength}
+            onEffectIntensityChange={setEffectIntensity}
             onChange={handleAdjustmentChange}
             onReset={handleReset}
           />
         </div>
       </div>
 
-      <div className="md:hidden border-t border-border">
+      <div className="md:hidden border-t border-border bg-card/60">
         <MobileTabs
           activeFilter={activeFilter}
           activePreset={activePreset}
           recommendation={activeRecommendation}
           filterStrength={filterStrength}
+          effectIntensity={effectIntensity}
           onFilterStrengthChange={setFilterStrength}
+          onEffectIntensityChange={setEffectIntensity}
           onFilterChange={handleFilterChange}
           sourceImage={image}
           sourceAnalysis={imageAnalysis}
@@ -229,9 +279,10 @@ const Index = () => {
       </div>
 
       <BottomBar
-        image={image}
+        fullImageData={fullImageData}
         filterName={activeFilter}
         filterStrength={filterStrength}
+        effectIntensity={effectIntensity}
         analysis={imageAnalysis}
         adjustments={adjustments}
         fileName={fileName}
@@ -239,10 +290,9 @@ const Index = () => {
         onToggleBefore={() => setShowBefore((value) => !value)}
         compareMode={compareMode}
         onCompareModeChange={setCompareMode}
-        comparePosition={comparePosition}
-        onComparePositionChange={setComparePosition}
         zoom={zoom}
         onZoomChange={setZoom}
+        exportSignal={exportSignal}
       />
     </div>
   );
@@ -253,7 +303,9 @@ const MobileTabs: React.FC<{
   activePreset: (typeof FILTER_PRESETS)[number];
   recommendation?: PresetRecommendation;
   filterStrength: number;
+  effectIntensity: number;
   onFilterStrengthChange: (value: number) => void;
+  onEffectIntensityChange: (value: number) => void;
   onFilterChange: (name: string) => void;
   sourceImage: HTMLImageElement | null;
   sourceAnalysis: ReturnType<typeof analyzeImageData> | null;
@@ -266,7 +318,9 @@ const MobileTabs: React.FC<{
   activePreset,
   recommendation,
   filterStrength,
+  effectIntensity,
   onFilterStrengthChange,
+  onEffectIntensityChange,
   onFilterChange,
   sourceImage,
   sourceAnalysis,
@@ -275,49 +329,51 @@ const MobileTabs: React.FC<{
   onAdjustmentChange,
   onReset,
 }) => {
-  const [tab, setTab] = useState<"filters" | "adjust">("filters");
-
   return (
-    <div>
-      <div className="flex border-b border-border">
-        <button
-          onClick={() => setTab("filters")}
-          className={`flex-1 py-2 font-mono-ui text-[11px] tracking-wider uppercase transition-colors ${
-            tab === "filters" ? "text-primary border-b-2 border-primary" : "text-muted-foreground"
-          }`}
-        >
-          Filters
-        </button>
-        <button
-          onClick={() => setTab("adjust")}
-          className={`flex-1 py-2 font-mono-ui text-[11px] tracking-wider uppercase transition-colors ${
-            tab === "adjust" ? "text-primary border-b-2 border-primary" : "text-muted-foreground"
-          }`}
-        >
-          Adjust
-        </button>
-      </div>
-      <div className="h-64 overflow-y-auto">
-        {tab === "filters" ? (
-          <FilterSidebar
-            activeFilter={activeFilter}
-            onFilterChange={onFilterChange}
-            sourceImage={sourceImage}
-            sourceAnalysis={sourceAnalysis}
-            recommendedPresetIds={recommendedPresetIds}
-          />
-        ) : (
-          <AdjustmentsPanel
-            activePreset={activePreset}
-            recommendation={recommendation}
-            adjustments={adjustments}
-            filterStrength={filterStrength}
-            onFilterStrengthChange={onFilterStrengthChange}
-            onChange={onAdjustmentChange}
-            onReset={onReset}
-          />
-        )}
-      </div>
+    <div className="space-y-3 px-2 py-3">
+      <FilterSidebar
+        activeFilter={activeFilter}
+        onFilterChange={onFilterChange}
+        sourceImage={sourceImage}
+        sourceAnalysis={sourceAnalysis}
+        recommendedPresetIds={recommendedPresetIds}
+        layout="strip"
+        swatchSize={40}
+      />
+
+      <Drawer>
+        <DrawerTrigger asChild>
+          <button className="w-full rounded-xl border border-border bg-card px-4 py-3 text-left">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="font-mono-ui text-[10px] uppercase tracking-[0.14em] text-primary">Adjustments</p>
+                <p className="text-sm text-foreground">{activePreset.name}</p>
+              </div>
+              <p className="font-mono-ui text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+                {filterStrength}% / {effectIntensity}%
+              </p>
+            </div>
+          </button>
+        </DrawerTrigger>
+        <DrawerContent className="max-h-[85vh]">
+          <DrawerHeader>
+            <DrawerTitle>Fine Tune</DrawerTitle>
+          </DrawerHeader>
+          <div className="overflow-y-auto pb-6">
+            <AdjustmentsPanel
+              activePreset={activePreset}
+              recommendation={recommendation}
+              adjustments={adjustments}
+              filterStrength={filterStrength}
+              effectIntensity={effectIntensity}
+              onFilterStrengthChange={onFilterStrengthChange}
+              onEffectIntensityChange={onEffectIntensityChange}
+              onChange={onAdjustmentChange}
+              onReset={onReset}
+            />
+          </div>
+        </DrawerContent>
+      </Drawer>
     </div>
   );
 };

@@ -7,7 +7,9 @@ interface AdjustmentsPanelProps {
   recommendation?: PresetRecommendation;
   adjustments: Adjustments;
   filterStrength: number;
+  effectIntensity: number;
   onFilterStrengthChange: (value: number) => void;
+  onEffectIntensityChange: (value: number) => void;
   onChange: (key: keyof Adjustments, value: number) => void;
   onReset: () => void;
 }
@@ -75,7 +77,6 @@ function SliderField({
   onChange: (value: number) => void;
 }) {
   const isCentered = min < 0;
-  const percentage = ((value - min) / (max - min)) * 100;
 
   return (
     <div className="space-y-1 px-1">
@@ -87,10 +88,7 @@ function SliderField({
       </div>
       <div className="relative">
         {isCentered ? (
-          <div
-            className="absolute top-1/2 -translate-y-1/2 w-px h-2 bg-muted-foreground/30"
-            style={{ left: "50%" }}
-          />
+          <div className="absolute top-1/2 left-1/2 h-2 w-px -translate-x-1/2 -translate-y-1/2 bg-muted-foreground/30" />
         ) : null}
         <input
           type="range"
@@ -99,11 +97,6 @@ function SliderField({
           value={value}
           onChange={(event) => onChange(Number(event.target.value))}
           className="filtr-slider"
-          style={{
-            background: isCentered
-              ? `linear-gradient(to right, hsl(var(--filtr-slider-track)) 0%, hsl(var(--filtr-slider-track)) ${Math.min(50, percentage)}%, hsl(var(--filtr-amber)) ${Math.min(50, percentage)}%, hsl(var(--filtr-amber)) ${Math.max(50, percentage)}%, hsl(var(--filtr-slider-track)) ${Math.max(50, percentage)}%, hsl(var(--filtr-slider-track)) 100%)`
-              : `linear-gradient(to right, hsl(var(--filtr-amber)) 0%, hsl(var(--filtr-amber)) ${percentage}%, hsl(var(--filtr-slider-track)) ${percentage}%, hsl(var(--filtr-slider-track)) 100%)`,
-          }}
         />
       </div>
     </div>
@@ -115,7 +108,9 @@ const AdjustmentsPanel: React.FC<AdjustmentsPanelProps> = ({
   recommendation,
   adjustments,
   filterStrength,
+  effectIntensity,
   onFilterStrengthChange,
+  onEffectIntensityChange,
   onChange,
   onReset,
 }) => {
@@ -183,6 +178,24 @@ const AdjustmentsPanel: React.FC<AdjustmentsPanelProps> = ({
           min={0}
           max={100}
           onChange={onFilterStrengthChange}
+        />
+      </div>
+
+      <div className="rounded-xl border border-border bg-card/50 px-3 py-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="font-mono-ui text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+            Master Intensity
+          </span>
+          <span className="font-mono-ui text-[11px] text-secondary-foreground tabular-nums">
+            {effectIntensity}%
+          </span>
+        </div>
+        <SliderField
+          label="Intensity"
+          value={effectIntensity}
+          min={0}
+          max={100}
+          onChange={onEffectIntensityChange}
         />
       </div>
 

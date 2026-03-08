@@ -154,17 +154,27 @@ export interface ImageAnalysis {
 
 export interface RenderOptions {
   strength?: number;
+  effectIntensity?: number;
   quality?: RenderQuality;
   analysis?: ImageAnalysis | null;
   adaptToScene?: boolean;
 }
 
+export interface CurveLuts {
+  master: Uint8Array | null;
+  r: Uint8Array | null;
+  g: Uint8Array | null;
+  b: Uint8Array | null;
+}
+
 export interface ResolvedFilterSettings {
   preset: FilterPresetDefinition;
   strength: number;
+  effectIntensity: number;
   quality: RenderQuality;
   analysis: ImageAnalysis | null;
   adjustments: Adjustments;
+  curveLuts: CurveLuts;
   curve?: ToneCurve;
   splitTone?: SplitToneSettings;
   hsl: HslBandAdjustment[];

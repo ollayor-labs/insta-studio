@@ -1,73 +1,78 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import {
-  applyFilter,
-  createImageDataFromImage,
-  type Adjustments,
-  type ImageAnalysis,
-} from "@/lib/filterEngine";
 
 interface ImageCanvasProps {
   image: HTMLImageElement | null;
   filterName: string;
-  filterStrength: number;
-  adjustments: Adjustments;
-  analysis: ImageAnalysis | null;
+  sourceImageData: ImageData | null;
+  filteredImageData: ImageData | null;
   showBefore: boolean;
   compareMode: boolean;
   comparePosition: number;
   onComparePositionChange: (value: number) => void;
   zoom: number;
-  onFilterApplied?: () => void;
+  onZoomChange: (value: number) => void;
+  isProcessing: boolean;
 }
 
-const PREVIEW_MAX_DIMENSION = 1600;
+function clampZoom(value: number): number {
+  return Math.max(25, Math.min(400, Math.round(value)));
+}
+
+function distanceBetween(first: { x: number; y: number }, second: { x: number; y: number }): number {
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
 
 const ImageCanvas: React.FC<ImageCanvasProps> = ({
   image,
   filterName,
-  filterStrength,
-  adjustments,
-  analysis,
+  sourceImageData,
+  filteredImageData,
   showBefore,
   compareMode,
   comparePosition,
   onComparePositionChange,
   zoom,
-  onFilterApplied,
+  onZoomChange,
+  isProcessing,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  const previewDataRef = useRef<ImageData | null>(null);
-  const fullDataRef = useRef<ImageData | null>(null);
   const rafRef = useRef<number>(0);
-  const [shimmer, setShimmer] = useState(false);
+  const activePointersRef = useRef<Map<number, { x: number; y: number; type: string }>>(new Map());
+  const pinchStartRef = useRef<{ distance: number; zoom: number } | null>(null);
+  const [switching, setSwitching] = useState(false);
   const previousFilterRef = useRef(filterName);
 
   useEffect(() => {
-    if (!image) return;
-    fullDataRef.current = createImageDataFromImage(image);
-    previewDataRef.current = createImageDataFromImage(image, PREVIEW_MAX_DIMENSION);
-  }, [image]);
-
-  useEffect(() => {
     if (previousFilterRef.current !== filterName) {
-      setShimmer(true);
-      const timeout = window.setTimeout(() => setShimmer(false), 450);
       previousFilterRef.current = filterName;
+      setSwitching(true);
+      const timeout = window.setTimeout(() => setSwitching(false), 100);
       return () => window.clearTimeout(timeout);
     }
   }, [filterName]);
 
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const stage = stageRef.current;
+    if (!canvas || !stage || !image) return;
+
+    const maxWidth = 1200;
+    const maxHeight = 800;
+    const scale = Math.min(maxWidth / image.width, maxHeight / image.height, 1);
+    const displayWidth = image.width * scale * (zoom / 100);
+    const displayHeight = image.height * scale * (zoom / 100);
+
+    canvas.style.setProperty("--filtr-canvas-width", `${displayWidth}px`);
+    canvas.style.setProperty("--filtr-canvas-height", `${displayHeight}px`);
+    canvas.style.setProperty("--filtr-image-rendering", zoom > 175 ? "pixelated" : "auto");
+    stage.style.setProperty("--filtr-compare-position", `${comparePosition}%`);
+  }, [comparePosition, image, zoom]);
+
   const render = useCallback(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !image) return;
-
-    const previewData = previewDataRef.current;
-    const fullData = fullDataRef.current;
-    const useFullResolution = zoom > 150 || !previewData || !fullData || previewData.width === fullData.width;
-    const source = useFullResolution ? fullData : previewData;
-
-    if (!source) return;
+    const source = sourceImageData;
+    if (!canvas || !source) return;
 
     canvas.width = source.width;
     canvas.height = source.height;
@@ -75,38 +80,25 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
     const context = canvas.getContext("2d");
     if (!context) return;
 
-    if (showBefore) {
+    context.clearRect(0, 0, source.width, source.height);
+
+    if (showBefore || !filteredImageData) {
       context.putImageData(source, 0, 0);
-      onFilterApplied?.();
       return;
     }
 
-    const filtered = applyFilter(source, filterName, adjustments, source.width, source.height, {
-      analysis,
-      quality: "preview",
-      strength: filterStrength,
-    });
-
-    context.putImageData(filtered, 0, 0);
+    context.putImageData(filteredImageData, 0, 0);
 
     if (compareMode) {
       const splitX = Math.max(0, Math.min(source.width, Math.round(source.width * (comparePosition / 100))));
       context.putImageData(source, 0, 0, 0, 0, splitX, source.height);
-      context.strokeStyle = "rgba(221, 183, 106, 0.9)";
-      context.lineWidth = Math.max(2, source.width / 600);
-      context.beginPath();
-      context.moveTo(splitX + 0.5, 0);
-      context.lineTo(splitX + 0.5, source.height);
-      context.stroke();
     }
-
-    onFilterApplied?.();
-  }, [image, zoom, showBefore, compareMode, comparePosition, filterName, filterStrength, adjustments, analysis, onFilterApplied]);
+  }, [compareMode, comparePosition, filteredImageData, showBefore, sourceImageData]);
 
   useEffect(() => {
-    cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(render);
-    return () => cancelAnimationFrame(rafRef.current);
+    window.cancelAnimationFrame(rafRef.current);
+    rafRef.current = window.requestAnimationFrame(render);
+    return () => window.cancelAnimationFrame(rafRef.current);
   }, [render]);
 
   const updateCompareFromClientX = useCallback(
@@ -121,70 +113,102 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
     [onComparePositionChange],
   );
 
-  const handleComparePointerDown = useCallback(
+  const handlePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
+      activePointersRef.current.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY,
+        type: event.pointerType,
+      });
+
+      if (event.pointerType === "touch") {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        const touchPointers = Array.from(activePointersRef.current.values()).filter((pointer) => pointer.type === "touch");
+
+        if (touchPointers.length === 2) {
+          pinchStartRef.current = {
+            distance: distanceBetween(touchPointers[0], touchPointers[1]),
+            zoom,
+          };
+          return;
+        }
+      }
+
       if (!compareMode || showBefore) return;
 
       event.preventDefault();
       updateCompareFromClientX(event.clientX);
       event.currentTarget.setPointerCapture(event.pointerId);
     },
-    [compareMode, showBefore, updateCompareFromClientX],
+    [compareMode, showBefore, updateCompareFromClientX, zoom],
   );
 
-  const handleComparePointerMove = useCallback(
+  const handlePointerMove = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
+      const pointer = activePointersRef.current.get(event.pointerId);
+      if (!pointer) return;
+
+      pointer.x = event.clientX;
+      pointer.y = event.clientY;
+
+      const touchPointers = Array.from(activePointersRef.current.values()).filter((entry) => entry.type === "touch");
+      if (touchPointers.length === 2 && pinchStartRef.current) {
+        event.preventDefault();
+        const nextDistance = distanceBetween(touchPointers[0], touchPointers[1]);
+        const scale = nextDistance / Math.max(1, pinchStartRef.current.distance);
+        onZoomChange(clampZoom(pinchStartRef.current.zoom * scale));
+        return;
+      }
+
       if (!compareMode || showBefore || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
       updateCompareFromClientX(event.clientX);
     },
-    [compareMode, showBefore, updateCompareFromClientX],
+    [compareMode, onZoomChange, showBefore, updateCompareFromClientX],
   );
 
-  if (!image) return null;
+  const handlePointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    activePointersRef.current.delete(event.pointerId);
+    const touchPointers = Array.from(activePointersRef.current.values()).filter((pointer) => pointer.type === "touch");
+    if (touchPointers.length < 2) {
+      pinchStartRef.current = null;
+    }
+  }, []);
 
-  const maxWidth = 1200;
-  const maxHeight = 800;
-  const scale = Math.min(maxWidth / image.width, maxHeight / image.height, 1);
-  const displayWidth = image.width * scale * (zoom / 100);
-  const displayHeight = image.height * scale * (zoom / 100);
+  if (!image || !sourceImageData) return null;
 
   return (
     <div className="flex-1 flex items-center justify-center overflow-auto p-4">
       <div
         ref={stageRef}
-        className={`relative ${compareMode && !showBefore ? "cursor-ew-resize touch-none" : ""}`}
-        onPointerDown={handleComparePointerDown}
-        onPointerMove={handleComparePointerMove}
+        className={`filtr-stage relative ${compareMode && !showBefore ? "cursor-ew-resize touch-none" : ""}`}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
       >
         <canvas
           ref={canvasRef}
-          className={`rounded-lg shadow-2xl ${shimmer ? "filtr-shimmer" : ""}`}
-          style={{
-            width: displayWidth,
-            height: displayHeight,
-            imageRendering: zoom > 175 ? "pixelated" : "auto",
-          }}
+          className={`filtr-main-canvas rounded-lg shadow-2xl transition-opacity duration-100 ${
+            switching ? "opacity-70" : "opacity-100"
+          }`}
         />
         {compareMode && !showBefore ? (
-          <>
-            <div
-              className="pointer-events-none absolute inset-y-0 z-10 -translate-x-1/2"
-              style={{ left: `${comparePosition}%` }}
-            >
-              <div className="relative h-full">
-                <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-primary/90 shadow-[0_0_18px_rgba(221,183,106,0.35)]" />
-                <div className="absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-primary/60 bg-background/85 shadow-xl backdrop-blur">
-                  <div className="flex items-center gap-1">
-                    <span className="h-4 w-px rounded-full bg-primary/70" />
-                    <span className="h-4 w-px rounded-full bg-primary/70" />
-                  </div>
+          <div className="pointer-events-none absolute inset-y-0 z-10 left-[var(--filtr-compare-position)] -translate-x-1/2">
+            <div className="relative h-full">
+              <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/90 shadow-[0_0_18px_rgba(255,255,255,0.28)]" />
+              <div className="absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-white/45 bg-background/85 shadow-xl backdrop-blur">
+                <div className="flex items-center gap-1">
+                  <span className="h-4 w-px rounded-full bg-white/80" />
+                  <span className="h-4 w-px rounded-full bg-white/80" />
                 </div>
               </div>
             </div>
-            <div className="pointer-events-none absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full bg-background/80 px-3 py-1 font-mono-ui text-[10px] uppercase tracking-[0.14em] text-foreground shadow-lg">
-              Drag To Compare
-            </div>
-          </>
+          </div>
+        ) : null}
+        {isProcessing ? (
+          <div className="pointer-events-none absolute bottom-4 right-4 rounded-full bg-background/85 px-3 py-1 font-mono-ui text-[10px] uppercase tracking-[0.14em] text-foreground shadow-lg">
+            Rendering
+          </div>
         ) : null}
       </div>
     </div>

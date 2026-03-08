@@ -12,9 +12,11 @@ interface FilterSidebarProps {
   sourceImage: HTMLImageElement | null;
   sourceAnalysis: ImageAnalysis | null;
   recommendedPresetIds: string[];
+  layout?: "grid" | "strip";
+  swatchSize?: number;
 }
 
-const SWATCH_SIZE = 64;
+const DEFAULT_SWATCH_SIZE = 40;
 
 const FilterSidebar: React.FC<FilterSidebarProps> = ({
   activeFilter,
@@ -22,23 +24,25 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
   sourceImage,
   sourceAnalysis,
   recommendedPresetIds,
+  layout = "grid",
+  swatchSize = DEFAULT_SWATCH_SIZE,
 }) => {
   const canvasRefs = useRef<Map<string, HTMLCanvasElement>>(new Map());
 
   const sampleData = useMemo(() => {
     if (!sourceImage) return null;
     const canvas = document.createElement("canvas");
-    canvas.width = SWATCH_SIZE;
-    canvas.height = SWATCH_SIZE;
+    canvas.width = swatchSize;
+    canvas.height = swatchSize;
     const context = canvas.getContext("2d");
     if (!context) return null;
 
     const size = Math.min(sourceImage.width, sourceImage.height);
     const sourceX = (sourceImage.width - size) / 2;
     const sourceY = (sourceImage.height - size) / 2;
-    context.drawImage(sourceImage, sourceX, sourceY, size, size, 0, 0, SWATCH_SIZE, SWATCH_SIZE);
-    return context.getImageData(0, 0, SWATCH_SIZE, SWATCH_SIZE);
-  }, [sourceImage]);
+    context.drawImage(sourceImage, sourceX, sourceY, size, size, 0, 0, swatchSize, swatchSize);
+    return context.getImageData(0, 0, swatchSize, swatchSize);
+  }, [sourceImage, swatchSize]);
 
   useEffect(() => {
     if (!sampleData) return;
@@ -48,14 +52,14 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
       const context = canvas?.getContext("2d");
       if (!canvas || !context) continue;
 
-      const filtered = generateSwatchData(sampleData, preset.name, SWATCH_SIZE, SWATCH_SIZE, {
+      const filtered = generateSwatchData(sampleData, preset.name, swatchSize, swatchSize, {
         analysis: sourceAnalysis,
         quality: "preview",
         strength: preset.defaultStrength * 100,
       });
       context.putImageData(filtered, 0, 0);
     }
-  }, [sampleData, sourceAnalysis]);
+  }, [sampleData, sourceAnalysis, swatchSize]);
 
   const recommendedPresets = useMemo(
     () => recommendedPresetIds.map((presetId) => getFilterPresetById(presetId)),
@@ -80,17 +84,18 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
       <button
         key={preset.name}
         onClick={() => onFilterChange(preset.name)}
-        className={`filtr-filter-card group text-left ${activeFilter === preset.name ? "active" : ""}`}
+        className={`filtr-filter-card group text-left ${layout === "strip" ? "w-24 shrink-0" : ""} ${
+          activeFilter === preset.name ? "active" : ""
+        }`}
       >
         <div className="relative">
           <canvas
             ref={(element) => {
               if (element) canvasRefs.current.set(preset.name, element);
             }}
-            width={SWATCH_SIZE}
-            height={SWATCH_SIZE}
+            width={swatchSize}
+            height={swatchSize}
             className="w-full aspect-square rounded-t-lg"
-            style={{ imageRendering: "auto" }}
           />
           {recommended ? (
             <span className="absolute top-1 right-1 rounded-full bg-primary/90 px-1.5 py-0.5 font-mono-ui text-[8px] uppercase tracking-[0.14em] text-primary-foreground">
@@ -111,7 +116,19 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
   };
 
   return (
-    <div className="w-full h-full overflow-y-auto p-3 space-y-4">
+    <div className={`w-full ${layout === "grid" ? "h-full overflow-y-auto p-3 space-y-4" : "space-y-3"}`}>
+      {layout === "strip" ? (
+        <div className="space-y-2 px-2 pb-1">
+          <p className="font-mono-ui text-[10px] uppercase tracking-[0.15em] text-muted-foreground">
+            Filters
+          </p>
+          <div className="flex gap-2 overflow-x-auto pb-2">
+            {FILTER_PRESETS.map((preset) => renderPresetCard(preset.name))}
+          </div>
+        </div>
+      ) : null}
+      {layout === "strip" ? null : (
+        <>
       <div className="space-y-1 px-1">
         <h2 className="font-display text-lg text-foreground">Filters</h2>
         <p className="text-[11px] leading-relaxed text-muted-foreground">
@@ -140,6 +157,8 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
           </div>
         </div>
       ))}
+        </>
+      )}
     </div>
   );
 };

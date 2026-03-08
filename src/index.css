@@ -155,6 +155,16 @@
     border-color: hsl(var(--filtr-amber));
     background-color: hsl(var(--filtr-amber) / 0.05);
   }
+
+  .filtr-stage {
+    --filtr-compare-position: 50%;
+  }
+
+  .filtr-main-canvas {
+    width: var(--filtr-canvas-width, auto);
+    height: var(--filtr-canvas-height, auto);
+    image-rendering: var(--filtr-image-rendering, auto);
+  }
 }
 
 @keyframes filtr-shimmer {
