@@ -26,3 +26,27 @@ export function showCopyFailedToast() {
     description: "Clipboard access was blocked for this image.",
   });
 }
+
+export function showUnsupportedImageToast() {
+  toast({
+    variant: "destructive",
+    title: "Unsupported image",
+    description: "Use JPG, PNG, WEBP, HEIC, or HEIF.",
+  });
+}
+
+export function showHeicConversionFailedToast() {
+  toast({
+    variant: "destructive",
+    title: "HEIC conversion failed",
+    description: "This HEIC image could not be converted in the browser.",
+  });
+}
+
+export function showImageDecodeFailedToast() {
+  toast({
+    variant: "destructive",
+    title: "Image load failed",
+    description: "The selected image could not be decoded.",
+  });
+}

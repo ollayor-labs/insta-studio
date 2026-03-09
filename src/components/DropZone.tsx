@@ -1,5 +1,15 @@
 import React, { useCallback, useState } from "react";
 import { Upload, Image as ImageIcon, Clipboard } from "lucide-react";
+import {
+  showHeicConversionFailedToast,
+  showImageDecodeFailedToast,
+  showUnsupportedImageToast,
+} from "@/lib/editorToasts";
+import {
+  IMAGE_INPUT_ACCEPT,
+  ImageImportError,
+  loadImportedImage,
+} from "@/lib/imageImport";
 
 interface DropZoneProps {
   onImageLoad: (img: HTMLImageElement, fileName: string) => void;
@@ -8,30 +18,49 @@ interface DropZoneProps {
 const DropZone: React.FC<DropZoneProps> = ({ onImageLoad }) => {
   const [isDragging, setIsDragging] = useState(false);
 
-  const processFile = useCallback((file: File) => {
-    if (!file.type.match(/^image\/(jpeg|png|webp)$/)) return;
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      const img = new Image();
-      img.onload = () => onImageLoad(img, file.name);
-      img.src = e.target?.result as string;
-    };
-    reader.readAsDataURL(file);
+  const processFile = useCallback(async (file: File) => {
+    try {
+      const image = await loadImportedImage(file);
+      onImageLoad(image, file.name);
+    } catch (error) {
+      if (error instanceof ImageImportError) {
+        if (error.code === "unsupported-format") {
+          showUnsupportedImageToast();
+          return;
+        }
+
+        if (error.code === "heic-conversion-failed") {
+          showHeicConversionFailedToast();
+          return;
+        }
+
+        if (error.code === "image-decode-failed") {
+          showImageDecodeFailedToast();
+          return;
+        }
+      }
+
+      showImageDecodeFailedToast();
+    }
   }, [onImageLoad]);
 
   const handleDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
     const file = e.dataTransfer.files[0];
-    if (file) processFile(file);
+    if (file) {
+      void processFile(file);
+    }
   }, [processFile]);
 
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
     const items = e.clipboardData.items;
     for (const item of items) {
-      if (item.type.startsWith("image/")) {
+      if (item.kind === "file") {
         const file = item.getAsFile();
-        if (file) processFile(file);
+        if (file) {
+          void processFile(file);
+        }
         break;
       }
     }
@@ -39,7 +68,10 @@ const DropZone: React.FC<DropZoneProps> = ({ onImageLoad }) => {
 
   const handleFileInput = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) processFile(file);
+    if (file) {
+      void processFile(file);
+    }
+    e.target.value = "";
   }, [processFile]);
 
   return (
@@ -67,7 +99,7 @@ const DropZone: React.FC<DropZoneProps> = ({ onImageLoad }) => {
             Drag & drop, paste from clipboard, or click to browse
           </p>
           <p className="text-muted-foreground/60 font-mono-ui text-xs tracking-wide">
-            JPG · PNG · WEBP
+            JPG · PNG · WEBP · HEIC · HEIF
           </p>
         </div>
 
@@ -78,7 +110,7 @@ const DropZone: React.FC<DropZoneProps> = ({ onImageLoad }) => {
           </span>
           <input
             type="file"
-            accept="image/jpeg,image/png,image/webp"
+            accept={IMAGE_INPUT_ACCEPT}
             className="hidden"
             onChange={handleFileInput}
           />
