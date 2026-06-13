@@ -1,4 +1,4 @@
-import { FILTER_PRESETS } from "./presets";
+import { FILTER_PRESETS } from "../filters/presets";
 import type { ImageAnalysis, ImageSceneTag, PresetRecommendation } from "./types";
 import { clamp01 } from "./utils";
 
@@ -77,6 +77,11 @@ export function recommendPresets(
         reasons: reasons.slice(0, 2),
       };
     })
-    .sort((left, right) => right.score - left.score)
+    .sort((left, right) => {
+      if (right.score !== left.score) return right.score - left.score;
+      const leftName = FILTER_PRESETS.find((p) => p.id === left.presetId)?.name ?? left.presetId;
+      const rightName = FILTER_PRESETS.find((p) => p.id === right.presetId)?.name ?? right.presetId;
+      return leftName < rightName ? -1 : leftName > rightName ? 1 : 0;
+    })
     .slice(0, limit);
 }

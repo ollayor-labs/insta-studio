@@ -98,10 +98,10 @@ async function convertHeicFile(file: File): Promise<Blob> {
   return normalizeHeicConversionResult(converted);
 }
 
-async function loadBlobAsImage(
+export async function loadBlobAsImage(
   blob: Blob,
   errorCode: ImageImportErrorCode = "image-decode-failed",
-): Promise<HTMLImageElement> {
+): Promise<LoadImportedImageResult> {
   const objectUrl = URL.createObjectURL(blob);
 
   return new Promise((resolve, reject) => {
@@ -116,7 +116,7 @@ async function loadBlobAsImage(
 
     image.onload = () => {
       cleanup();
-      resolve(image);
+      resolve({ image, blob });
     };
 
     image.onerror = () => {
@@ -128,30 +128,54 @@ async function loadBlobAsImage(
   });
 }
 
-export async function loadImportedImage(file: File): Promise<HTMLImageElement> {
+export interface LoadImportedImageResult {
+  image: HTMLImageElement;
+  blob: Blob;
+}
+
+export async function loadImportedImage(file: File): Promise<LoadImportedImageResult> {
   if (!isSupportedImageFile(file)) {
     throw new ImageImportError("unsupported-format", "This file format is not supported.");
   }
 
   if (!isHeicLikeFile(file)) {
-    return loadBlobAsImage(file);
+    return await loadBlobAsImage(file);
+  }
+
+  // HEIC files: convert to JPEG first, then decode. The previous order tried
+  // the browser-native decoder first, which always fails on non-Safari
+  // engines and costs an object URL + Image decode attempt per file. Going
+  // straight to the JS converter avoids that wasted round trip and gives
+  // consistent behavior across browsers. We still fall back to the native
+  // decoder if conversion throws so that future engines (e.g. a WebView
+  // gaining HEIC support) keep working.
+  //
+  // Error mapping: if the converter throws a non-ImageImportError, the
+  // file is HEIC and the conversion genuinely failed — track that so
+  // the second-chance path can map the final failure to
+  // `heic-conversion-failed` (a regular decode error would otherwise
+  // be surfaced as `image-decode-failed` and the user would see the
+  // wrong toast for what's really a HEIC problem).
+  let converterFailed = false;
+  try {
+    const converted = await convertHeicFile(file);
+    return await loadBlobAsImage(converted);
+  } catch (conversionError) {
+    if (conversionError instanceof ImageImportError && conversionError.code !== "heic-conversion-failed") {
+      throw conversionError;
+    }
+    converterFailed = true;
   }
 
   try {
     return await loadBlobAsImage(file);
-  } catch (error) {
-    if (!(error instanceof ImageImportError) || error.code !== "image-decode-failed") {
-      throw error;
+  } catch (nativeError) {
+    if (nativeError instanceof ImageImportError) {
+      if (nativeError.code === "image-decode-failed" && converterFailed) {
+        throw new ImageImportError("heic-conversion-failed", "The HEIC image could not be converted.");
+      }
+      throw nativeError;
     }
-  }
-
-  try {
-    return loadBlobAsImage(await convertHeicFile(file));
-  } catch (error) {
-    if (error instanceof ImageImportError) {
-      throw error;
-    }
-
     throw new ImageImportError("heic-conversion-failed", "The HEIC image could not be converted.");
   }
 }

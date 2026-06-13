@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useState } from "react";
-import { Copy, Download, Eye, EyeOff, ImageDown, SplitSquareVertical, ZoomIn, ZoomOut } from "lucide-react";
+import { Copy, Download, ImageDown, Play, SplitSquareVertical, ZoomIn, ZoomOut } from "lucide-react";
 import { prepareFilterSettings, type Adjustments, type ImageAnalysis } from "@/lib/filterEngine";
 import { renderFilterOnWorker } from "@/lib/filter-worker";
+import { resolveExportExtension, resolveExportMime } from "@/lib/exportFormat";
+import { getExifOrientation, withExifInjected } from "@/lib/exif";
 import {
   showCopyFailedToast,
   showCopyToast,
@@ -9,7 +11,9 @@ import {
 } from "@/lib/editorToasts";
 
 type ExportSize = "original" | "2x" | "50%";
-type ExportFormat = "jpeg" | "png";
+type ExportFormat = "jpeg" | "png" | "webp" | "original";
+
+
 
 interface BottomBarProps {
   fullImageData: ImageData | null;
@@ -19,10 +23,14 @@ interface BottomBarProps {
   analysis: ImageAnalysis | null;
   adjustments: Adjustments;
   fileName: string;
-  showBefore: boolean;
-  onToggleBefore: () => void;
+  sourceMimeType: string | null;
+  currentExifBytes: Uint8Array | null;
+  viewMode: "edited" | "original" | "studio";
+  onViewModeChange: (value: "edited" | "original" | "studio") => void;
   compareMode: boolean;
   onCompareModeChange: (value: boolean) => void;
+  compareReveal: "off" | "playing";
+  onPlayReveal: () => void;
   zoom: number;
   onZoomChange: (value: number) => void;
   exportSignal: number;
@@ -39,8 +47,12 @@ function formatTimestamp(date = new Date()): string {
   return `${year}${month}${day}_${hour}${minute}`;
 }
 
-function createExportName(filterName: string, format: ExportFormat): string {
-  const extension = format === "png" ? "png" : "jpg";
+function createExportName(
+  filterName: string,
+  format: ExportFormat,
+  sourceMimeType: string | null = null,
+): string {
+  const extension = resolveExportExtension(format, sourceMimeType);
   return `insta-studio_${filterName.toLowerCase().replace(/\s+/g, "_")}_${formatTimestamp()}.${extension}`;
 }
 
@@ -55,11 +67,18 @@ function createCanvas(width: number, height: number): RenderCanvas {
   return canvas;
 }
 
-async function canvasToBlob(canvas: RenderCanvas, format: ExportFormat, quality: number): Promise<Blob> {
+async function canvasToBlob(
+  canvas: RenderCanvas,
+  format: ExportFormat,
+  quality: number,
+  sourceMimeType: string | null = null,
+): Promise<Blob> {
+  const mime = resolveExportMime(format, sourceMimeType);
+  const isLossless = mime === "image/png";
   if (canvas instanceof OffscreenCanvas) {
     return canvas.convertToBlob({
-      type: format === "png" ? "image/png" : "image/jpeg",
-      quality: format === "png" ? undefined : quality / 100,
+      type: mime,
+      quality: isLossless ? undefined : quality / 100,
     });
   }
 
@@ -72,8 +91,8 @@ async function canvasToBlob(canvas: RenderCanvas, format: ExportFormat, quality:
         }
         resolve(blob);
       },
-      format === "png" ? "image/png" : "image/jpeg",
-      format === "png" ? undefined : quality / 100,
+      mime,
+      isLossless ? undefined : quality / 100,
     );
   });
 }
@@ -95,14 +114,80 @@ function applyWatermark(canvas: RenderCanvas): void {
   context.restore();
 }
 
-function drawImageDataToCanvas(imageData: ImageData): RenderCanvas {
-  const canvas = createCanvas(imageData.width, imageData.height);
+// Maps an EXIF orientation value (1..8) to the (width, height) of the
+// post-orientation bitmap. Rotations 5..8 swap the dimensions; mirrors
+// keep them.
+function orientedDimensions(width: number, height: number, orientation: number): { width: number; height: number } {
+  if (orientation >= 5 && orientation <= 8) {
+    return { width: height, height: width };
+  }
+  return { width, height };
+}
+
+// Draws the rendered ImageData onto a canvas that has been rotated /
+// mirrored to match the EXIF orientation. The putImageData call paints
+// the pixels in the canvas's local coordinate system; the canvas itself
+// is sized to the *oriented* dimensions so the rest of the export
+// pipeline (resample, encode) sees the correct shape.
+function drawImageDataToCanvas(imageData: ImageData, orientation: number): RenderCanvas {
+  const { width, height } = orientedDimensions(imageData.width, imageData.height, orientation);
+  const canvas = createCanvas(width, height);
   const context = canvas.getContext("2d");
   if (!context) {
     throw new Error("Could not create export context");
   }
 
-  context.putImageData(imageData, 0, 0);
+  if (orientation === 1) {
+    context.putImageData(imageData, 0, 0);
+    return canvas;
+  }
+
+  // The 8 EXIF orientations map to the canvas transform that turns
+  // the source-coordinate bitmap into the display-coordinate bitmap.
+  // We translate+rotate+scale to map (0,0)..(w,h) into the oriented
+  // bounding box, then draw the image data offset so putImageData
+  // hits the right slot in the buffer.
+  switch (orientation) {
+    case 2: // horizontal flip
+      context.translate(width, 0);
+      context.scale(-1, 1);
+      context.putImageData(imageData, 0, 0);
+      break;
+    case 3: // 180° rotation
+      context.translate(width, height);
+      context.rotate(Math.PI);
+      context.putImageData(imageData, 0, 0);
+      break;
+    case 4: // vertical flip
+      context.translate(0, height);
+      context.scale(1, -1);
+      context.putImageData(imageData, 0, 0);
+      break;
+    case 5: // 90° CW + horizontal flip (transpose)
+      context.rotate(Math.PI / 2);
+      context.scale(1, -1);
+      context.putImageData(imageData, 0, 0);
+      break;
+    case 6: // 90° CW
+      context.rotate(Math.PI / 2);
+      context.translate(0, -imageData.width);
+      context.putImageData(imageData, 0, 0);
+      break;
+    case 7: // 90° CW + vertical flip (transverse)
+      context.rotate(Math.PI / 2);
+      context.translate(height, -imageData.width);
+      context.scale(-1, 1);
+      context.putImageData(imageData, 0, 0);
+      break;
+    case 8: // 90° CCW
+      context.rotate(-Math.PI / 2);
+      context.translate(-height, 0);
+      context.putImageData(imageData, 0, 0);
+      break;
+    default:
+      context.putImageData(imageData, 0, 0);
+      break;
+  }
   return canvas;
 }
 
@@ -133,10 +218,14 @@ const BottomBar: React.FC<BottomBarProps> = ({
   analysis,
   adjustments,
   fileName,
-  showBefore,
-  onToggleBefore,
+  sourceMimeType,
+  currentExifBytes,
+  viewMode,
+  onViewModeChange,
   compareMode,
   onCompareModeChange,
+  compareReveal,
+  onPlayReveal,
   zoom,
   onZoomChange,
   exportSignal,
@@ -163,24 +252,50 @@ const BottomBar: React.FC<BottomBarProps> = ({
             quality: "export",
             strength: filterStrength,
             effectIntensity,
+            // Run the export through the Float32 pipeline to keep sub-LSB
+            // precision across the 5+ passes and avoid the per-pass
+            // rounding that produces banding in smooth gradients. Preview
+            // (the live canvas) stays on Uint8 for speed.
+            precision: "float32",
           },
           analysis ?? undefined,
         );
 
         const filtered = await renderFilterOnWorker(fullImageData, settings);
-        const baseCanvas = drawImageDataToCanvas(filtered);
+        // Apply EXIF orientation to the rendered pixels so a portrait-
+        // orientation phone photo comes out the right way up. The
+        // metadata re-injection below still tags the file with the
+        // original orientation; downstream readers that *don't* honour
+        // EXIF will see the correctly-oriented pixels.
+        const orientation = getExifOrientation(currentExifBytes);
+        const baseCanvas = drawImageDataToCanvas(filtered, orientation);
         const exportCanvas = resampleCanvas(baseCanvas, targetSize);
 
         if (withWatermark) {
           applyWatermark(exportCanvas);
         }
 
-        return await canvasToBlob(exportCanvas, targetFormat, targetQuality);
+        const resolvedMime = resolveExportMime(targetFormat, sourceMimeType);
+        const rawBlob = await canvasToBlob(exportCanvas, targetFormat, targetQuality, sourceMimeType);
+        // Re-inject the original EXIF payload (JPEG, PNG, and WebP all
+        // support it). The canvas encoder strips it; this restores the
+        // user's orientation, camera info, etc. The dispatch lives in
+        // `lib/exif.ts` and is format-aware underneath, but the storage
+        // shape we pass in is format-agnostic (bare TIFF) thanks to the
+        // import-time reader.
+        if (
+          resolvedMime === "image/jpeg" ||
+          resolvedMime === "image/png" ||
+          resolvedMime === "image/webp"
+        ) {
+          return await withExifInjected(rawBlob, currentExifBytes);
+        }
+        return rawBlob;
       } finally {
         setExporting(false);
       }
     },
-    [adjustments, analysis, effectIntensity, filterName, filterStrength, fullImageData],
+    [adjustments, analysis, currentExifBytes, effectIntensity, filterName, filterStrength, fullImageData, sourceMimeType],
   );
 
   const handleDownload = useCallback(async () => {
@@ -188,12 +303,12 @@ const BottomBar: React.FC<BottomBarProps> = ({
     if (!blob) return;
 
     const link = document.createElement("a");
-    link.download = createExportName(filterName, format);
+    link.download = createExportName(filterName, format, sourceMimeType);
     link.href = URL.createObjectURL(blob);
     link.click();
     window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
     showDownloadToast(filterName);
-  }, [filterName, format, quality, renderExportBlob, size, watermark]);
+  }, [filterName, format, quality, renderExportBlob, size, sourceMimeType, watermark]);
 
   const handleCopy = useCallback(async () => {
     const blob = await renderExportBlob("png", "original", 100, false);
@@ -220,13 +335,51 @@ const BottomBar: React.FC<BottomBarProps> = ({
   return (
     <div className="min-h-12 border-t border-border bg-card flex flex-wrap items-center justify-between px-4 py-2 gap-4">
       <div className="flex items-center gap-3">
-        <button
-          onClick={onToggleBefore}
-          className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors font-mono-ui text-[11px]"
+        <div
+          className="flex items-center gap-0.5 rounded-full border border-border bg-background/60 p-0.5 font-mono-ui text-[10px] uppercase tracking-[0.14em]"
+          role="radiogroup"
+          aria-label="Compare view"
         >
-          {showBefore ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
-          {showBefore ? "Original" : "Edited"}
-        </button>
+          {(
+            [
+              { value: "edited", label: "B" },
+              { value: "original", label: "A" },
+              { value: "studio", label: "C" },
+            ] as const
+          ).map((entry) => {
+            const active = viewMode === entry.value;
+            const fullLabel = entry.value === "edited"
+              ? "B · Adaptive"
+              : entry.value === "original"
+                ? "A · Original"
+                : "C · Studio";
+            return (
+              <button
+                key={entry.value}
+                type="button"
+                role="radio"
+                aria-checked={active}
+                title={fullLabel}
+                onClick={() => onViewModeChange(entry.value)}
+                className={`flex h-6 w-7 items-center justify-center rounded-full transition-colors ${
+                  active
+                    ? "bg-primary/15 text-primary"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {entry.label}
+              </button>
+            );
+          })}
+        </div>
+
+        <span className="font-mono-ui text-[10px] text-muted-foreground uppercase tracking-[0.14em]">
+          {viewMode === "edited"
+            ? "B · Adaptive"
+            : viewMode === "original"
+              ? "A · Original"
+              : "C · Studio"}
+        </span>
 
         <button
           onClick={() => onCompareModeChange(!compareMode)}
@@ -238,9 +391,23 @@ const BottomBar: React.FC<BottomBarProps> = ({
           Compare
         </button>
 
+        <button
+          onClick={onPlayReveal}
+          disabled={!fullImageData}
+          className={`flex items-center gap-1.5 font-mono-ui text-[11px] transition-colors ${
+            compareReveal === "playing"
+              ? "text-primary"
+              : "text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
+          }`}
+          title="Play an animated before/after reveal (Shift+C)"
+        >
+          <Play className="w-3.5 h-3.5" />
+          {compareReveal === "playing" ? "Revealing…" : "Reveal"}
+        </button>
+
         {compareMode ? (
           <span className="font-mono-ui text-[10px] text-muted-foreground uppercase tracking-[0.14em]">
-            Drag slider on image
+            {compareReveal === "playing" ? "Auto-cycling" : "Drag slider on image"}
           </span>
         ) : null}
       </div>
@@ -279,15 +446,18 @@ const BottomBar: React.FC<BottomBarProps> = ({
             value={format}
             onChange={(event) => setFormat(event.target.value as ExportFormat)}
             className="rounded-md border border-border bg-background px-2 py-1 font-mono-ui text-[11px] text-foreground"
+            title="PNG is lossless; JPG/WebP are lossy. &#39;Original&#39; preserves the source format when it&#39;s a supported export type, otherwise falls back to JPG."
           >
             <option value="jpeg">JPG</option>
             <option value="png">PNG</option>
+            <option value="webp">WebP</option>
+            <option value="original">Original</option>
           </select>
           <select
             value={quality}
             onChange={(event) => setQuality(Number(event.target.value))}
             className="rounded-md border border-border bg-background px-2 py-1 font-mono-ui text-[11px] text-foreground"
-            disabled={format === "png"}
+            disabled={resolveExportMime(format, sourceMimeType) === "image/png"}
           >
             <option value={70}>Q70</option>
             <option value={85}>Q85</option>

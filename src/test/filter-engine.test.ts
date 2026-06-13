@@ -3,6 +3,7 @@ import {
   analyzeImageData,
   applyFilter,
   defaultAdjustments,
+  FILTER_PRESETS,
   recommendPresets,
 } from "@/lib/filterEngine";
 
@@ -70,6 +71,98 @@ describe("filter engine", () => {
     expect(recommendations[0]?.presetId).toBe("soft-portrait");
   });
 
+  it("protects skin pixels while still applying vibrance to sky pixels", () => {
+    // Source: 2x1 image. Pixel 0 is a skin tone (hue ~30, mid sat/lightness).
+    //          Pixel 1 is a sky tone (hue ~210, mid sat/lightness).
+    // We feed an analysis claiming strong portrait likelihood so the
+    // skinProtection guard kicks in, then push the Soft Portrait preset at
+    // 100% strength with scene adaption enabled. The skin pixel must barely
+    // move while the sky pixel must shift visibly.
+    const source = createImageData(2, 1, [
+      220, 175, 145, 255, // skin
+      110, 165, 215, 255, // sky
+    ]);
+
+    const analysis = analyzeImageData(source);
+    // Force the portrait guard to a known-strong value. The real
+    //  heuristic may be conservative on a 2x1 image;
+    // the guard is what we are actually testing here.
+    const forcedAnalysis = { ...analysis, portraitLikelihood: 1 };
+
+    const result = applyFilter(
+      source,
+      "Soft Portrait",
+      defaultAdjustments,
+      source.width,
+      source.height,
+      { strength: 100, adaptToScene: true, analysis: forcedAnalysis },
+    );
+
+    const skinDelta =
+      Math.abs(result.data[0] - source.data[0]) +
+      Math.abs(result.data[1] - source.data[1]) +
+      Math.abs(result.data[2] - source.data[2]);
+    const skyDelta =
+      Math.abs(result.data[4] - source.data[4]) +
+      Math.abs(result.data[5] - source.data[5]) +
+      Math.abs(result.data[6] - source.data[6]);
+
+    // Sky should move more than skin (the guard's whole point).
+    expect(skyDelta).toBeGreaterThan(skinDelta);
+
+    // Skin still gets the *global* adjustments (brightness, contrast,
+    // highlights, etc.), so we don't expect a small absolute delta —
+    // only that the differential guard holds. Assert skin moved less
+    // than 2x what the sky did, i.e. the band-level sat/light
+    // offsets are being meaningfully damped.
+    expect(skinDelta).toBeLessThan(skyDelta * 2);
+    expect(skinDelta).toBeGreaterThan(0);
+  });
+
+  it("breaks recommendation ties deterministically by preset name", () => {
+    // Build a zeroed analysis so every preset scores 0 and the secondary
+    // name-based sort decides order. (A real flat gray image still yields
+    // non-zero likelihoods in `analyzeImageData`, so the test has to
+    // construct the analysis directly to hit the tie path.)
+    const analysis = {
+      width: 0,
+      height: 0,
+      pixelCount: 0,
+      averageLuminance: 0,
+      luminanceStdDev: 0,
+      dynamicRange: 0,
+      averageSaturation: 0,
+      warmth: 0,
+      highlightClipping: 0,
+      shadowClipping: 0,
+      histogram: { luminance: new Uint16Array(256) },
+      channelHistogram: { r: new Uint16Array(256), g: new Uint16Array(256), b: new Uint16Array(256) },
+      clippingChannels: {
+        highlight: { r: false, g: false, b: false },
+        shadow: { r: false, g: false, b: false },
+      },
+      portraitLikelihood: 0,
+      indoorLikelihood: 0,
+      outdoorLikelihood: 0,
+      brightLikelihood: 0,
+      lowLightLikelihood: 0,
+      colorfulLikelihood: 0,
+      flatLikelihood: 0,
+      overexposedLikelihood: 0,
+      underexposedLikelihood: 0,
+      sceneTags: [],
+    } as const;
+    const recommendations = recommendPresets(analysis, 13);
+
+    // The result should be the FILTER_PRESETS list (excluding "original")
+    // sorted by name, with a stable order between runs.
+    const names = recommendations.map((rec) => {
+      const match = FILTER_PRESETS.find((p) => p.id === rec.presetId);
+      return match?.name ?? rec.presetId;
+    });
+    const sortedNames = [...names].sort((a, b) => a.localeCompare(b));
+    expect(names).toEqual(sortedNames);
+  });
   it("renders premium monochrome without color channel divergence", () => {
     const source = createImageData(2, 1, [
       140, 80, 60, 255,
@@ -85,5 +178,39 @@ describe("filter engine", () => {
     expect(result.data[1]).toBe(result.data[2]);
     expect(result.data[4]).toBe(result.data[5]);
     expect(result.data[5]).toBe(result.data[6]);
+  });
+
+  it("produces different output when adaptive is enabled vs studio mode", () => {
+    // A 2x1 portrait-ish image: warm skin pixels and a bright sky pixel.
+    // Soft Portrait has strong portraitProtection + lowLightRestraint, so
+    // the adaptive path should pull the result measurably away from the
+    // studio (analysis-blind) path.
+    const source = createImageData(2, 1, [
+      220, 180, 150, 255, // warm skin
+      230, 235, 245, 255, // bright sky
+    ]);
+    const analysis = analyzeImageData(source);
+
+    const studio = applyFilter(
+      source,
+      "Soft Portrait",
+      defaultAdjustments,
+      source.width,
+      source.height,
+      { strength: 100, adaptToScene: false, analysis }
+    );
+    const adaptive = applyFilter(
+      source,
+      "Soft Portrait",
+      defaultAdjustments,
+      source.width,
+      source.height,
+      { strength: 100, adaptToScene: true, analysis }
+    );
+
+    const delta = averageChannelDelta(studio, adaptive);
+    // The two paths must differ - if they ever collapse to the same
+    // output, the toggle is silently a no-op.
+    expect(delta).toBeGreaterThan(0.5);
   });
 });

@@ -1,6 +1,10 @@
-import React from "react";
-import { RotateCcw } from "lucide-react";
+import React, { useState } from "react";
+import { BookmarkPlus, Check, RotateCcw } from "lucide-react";
 import type { Adjustments, FilterPreset, PresetRecommendation } from "@/lib/filterEngine";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+
+type SceneMode = "adaptive" | "studio";
 
 interface AdjustmentsPanelProps {
   activePreset: FilterPreset;
@@ -12,6 +16,10 @@ interface AdjustmentsPanelProps {
   onEffectIntensityChange: (value: number) => void;
   onChange: (key: keyof Adjustments, value: number) => void;
   onReset: () => void;
+  onSavePreset: (name: string) => void;
+  canSavePreset: boolean;
+  sceneMode: SceneMode;
+  onSceneModeChange: (mode: SceneMode) => void;
 }
 
 interface SliderConfig {
@@ -113,7 +121,20 @@ const AdjustmentsPanel: React.FC<AdjustmentsPanelProps> = ({
   onEffectIntensityChange,
   onChange,
   onReset,
+  onSavePreset,
+  canSavePreset,
+  sceneMode,
+  onSceneModeChange,
 }) => {
+  const [saveName, setSaveName] = useState("");
+  const [savedFlash, setSavedFlash] = useState(false);
+  const handleSave = () => {
+    const trimmed = saveName.trim() || `Custom ${activePreset.name}`;
+    onSavePreset(trimmed);
+    setSaveName("");
+    setSavedFlash(true);
+    window.setTimeout(() => setSavedFlash(false), 1200);
+  };
   return (
     <div className="w-full h-full overflow-y-auto p-3 space-y-4">
       <div className="flex items-center justify-between px-1">
@@ -130,6 +151,83 @@ const AdjustmentsPanel: React.FC<AdjustmentsPanelProps> = ({
           <RotateCcw className="w-3 h-3" />
           Reset
         </button>
+      </div>
+
+      <div
+        role="radiogroup"
+        aria-label="Scene adaptation mode"
+        className="flex items-center rounded-lg border border-border bg-card/50 p-0.5 font-mono-ui text-[10px] uppercase tracking-[0.14em]"
+      >
+        <button
+          type="button"
+          role="radio"
+          aria-checked={sceneMode === "adaptive"}
+          onClick={() => onSceneModeChange("adaptive")}
+          className={`flex-1 rounded-md px-2 py-1.5 transition-colors ${
+            sceneMode === "adaptive"
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Adaptive
+        </button>
+        <button
+          type="button"
+          role="radio"
+          aria-checked={sceneMode === "studio"}
+          onClick={() => onSceneModeChange("studio")}
+          className={`flex-1 rounded-md px-2 py-1.5 transition-colors ${
+            sceneMode === "studio"
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          Studio
+        </button>
+      </div>
+      <p className="-mt-2 px-1 font-mono-ui text-[10px] leading-relaxed text-muted-foreground">
+        {sceneMode === "adaptive"
+          ? "Engine reduces aggressive adjustments on portraits, low-light, and bright scenes."
+          : "Engine applies the preset exactly. No scene-aware overrides."}
+      </p>
+
+      <div className="rounded-xl border border-border bg-card/50 px-3 py-3 space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="font-mono-ui text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+            Save Preset
+          </span>
+          <span className="font-mono-ui text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            {activePreset.id.startsWith("custom-") || activePreset.category === "Custom"
+              ? "Custom"
+              : `From ${activePreset.name}`}
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <Input
+            value={saveName}
+            onChange={(event) => setSaveName(event.target.value)}
+            placeholder="My preset name"
+            className="h-8 text-xs"
+            disabled={!canSavePreset}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                handleSave();
+              }
+            }}
+          />
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            onClick={handleSave}
+            disabled={!canSavePreset}
+            className="h-8 gap-1.5 font-mono-ui text-[11px]"
+          >
+            {savedFlash ? <Check className="h-3 w-3" /> : <BookmarkPlus className="h-3 w-3" />}
+            {savedFlash ? "Saved" : "Save"}
+          </Button>
+        </div>
       </div>
 
       <div className="rounded-xl border border-border bg-card/70 px-3 py-3 space-y-3">

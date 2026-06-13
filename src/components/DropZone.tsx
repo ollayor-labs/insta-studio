@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from "react";
-import { Upload, Image as ImageIcon, Clipboard } from "lucide-react";
+import { Loader2, Upload, Image as ImageIcon, Clipboard } from "lucide-react";
 import {
   showHeicConversionFailedToast,
   showImageDecodeFailedToast,
@@ -12,16 +12,36 @@ import {
 } from "@/lib/imageImport";
 
 interface DropZoneProps {
-  onImageLoad: (img: HTMLImageElement, fileName: string) => void;
+  onImageLoad: (img: HTMLImageElement, fileName: string, blob: Blob, mimeType: string) => void;
+  onLoadingChange?: (loading: { name: string; size: number } | null) => void;
 }
 
-const DropZone: React.FC<DropZoneProps> = ({ onImageLoad }) => {
+interface LoadingFile {
+  name: string;
+  size: number;
+}
+
+import { formatFileSize } from "@/lib/fileSize";
+
+const DropZone: React.FC<DropZoneProps> = ({ onImageLoad, onLoadingChange }) => {
   const [isDragging, setIsDragging] = useState(false);
+  const [loadingFile, setLoadingFile] = useState<LoadingFile | null>(null);
+
+  // Keep the parent in sync with the loading state. Used by the global
+  // Cmd+V handler in `Index.tsx` to render a floating import indicator
+  // even when the dropzone isn't visible (i.e. the editor is already
+  // open and the user pastes a new image).
+  React.useEffect(() => {
+    onLoadingChange?.(loadingFile);
+  }, [loadingFile, onLoadingChange]);
 
   const processFile = useCallback(async (file: File) => {
+    const next: LoadingFile = { name: file.name, size: file.size };
+    setLoadingFile(next);
     try {
-      const image = await loadImportedImage(file);
-      onImageLoad(image, file.name);
+      const { image, blob } = await loadImportedImage(file);
+      const mimeType = blob.type || file.type || "image/jpeg";
+      onImageLoad(image, file.name, blob, mimeType);
     } catch (error) {
       if (error instanceof ImageImportError) {
         if (error.code === "unsupported-format") {
@@ -41,6 +61,8 @@ const DropZone: React.FC<DropZoneProps> = ({ onImageLoad }) => {
       }
 
       showImageDecodeFailedToast();
+    } finally {
+      setLoadingFile(null);
     }
   }, [onImageLoad]);
 
@@ -73,6 +95,34 @@ const DropZone: React.FC<DropZoneProps> = ({ onImageLoad }) => {
     }
     e.target.value = "";
   }, [processFile]);
+
+  if (loadingFile) {
+    return (
+      <div className="filtr-dropzone" data-state="loading">
+        <div className="flex flex-col items-center gap-5 p-8">
+          <div className="relative">
+            <div className="w-20 h-20 rounded-2xl bg-secondary flex items-center justify-center">
+              <Loader2 className="w-9 h-9 text-primary animate-spin" />
+            </div>
+          </div>
+
+          <div className="text-center space-y-1.5">
+            <h2 className="font-display text-2xl text-foreground">Importing…</h2>
+            <p className="text-foreground/90 font-mono-ui text-sm break-all max-w-md">
+              {loadingFile.name}
+            </p>
+            <p className="text-muted-foreground font-mono-ui text-xs tracking-wide">
+              {formatFileSize(loadingFile.size)}
+            </p>
+          </div>
+
+          <p className="text-muted-foreground/60 font-mono-ui text-[11px] tracking-wide text-center max-w-sm">
+            Large or HEIC files can take a few seconds. Hold tight.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

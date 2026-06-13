@@ -24,3 +24,8 @@ dist-ssr
 *.sw?
 .vercel
 .env*.local
+
+# Lockfile management: package-lock.json is the source of truth (npm).
+# bun.lock (text) and bun.lockb (binary) are not used by this repo's CI.
+bun.lock
+bun.lockb

@@ -1,17 +1,23 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import HistogramBadge from "@/components/HistogramBadge";
+import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
+import { detectClippingFromImageData, type ClippingChannels, type ImageAnalysis } from "@/lib/filterEngine";
 
 interface ImageCanvasProps {
   image: HTMLImageElement | null;
   filterName: string;
   sourceImageData: ImageData | null;
   filteredImageData: ImageData | null;
-  showBefore: boolean;
+  studioImageData: ImageData | null;
+  viewMode: "edited" | "original" | "studio";
   compareMode: boolean;
   comparePosition: number;
   onComparePositionChange: (value: number) => void;
   zoom: number;
   onZoomChange: (value: number) => void;
   isProcessing: boolean;
+  studioIsProcessing?: boolean;
+  sourceAnalysis: ImageAnalysis | null;
 }
 
 function clampZoom(value: number): number {
@@ -27,28 +33,54 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
   filterName,
   sourceImageData,
   filteredImageData,
-  showBefore,
+  studioImageData,
+  viewMode,
   compareMode,
   comparePosition,
   onComparePositionChange,
   zoom,
   onZoomChange,
   isProcessing,
+  studioIsProcessing = false,
+  sourceAnalysis,
 }) => {
   const baseCanvasRef = useRef<HTMLCanvasElement>(null);
   const revealCanvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
   const rafRef = useRef<number>(0);
   const revealRafRef = useRef<number>(0);
   const revealTimeoutRef = useRef<number>(0);
   const activePointersRef = useRef<Map<number, { x: number; y: number; type: string }>>(new Map());
   const pinchStartRef = useRef<{ distance: number; zoom: number } | null>(null);
+  // Pending cursor-anchored scroll offset. We store it here when the wheel
+  // event fires (before React commits the new zoom) and apply it in a
+  // layout effect once the canvas has resized to its new dimensions.
+  const pendingScrollRef = useRef<{ left: number; top: number } | null>(null);
   const [stableFrame, setStableFrame] = useState<ImageData | null>(null);
   const [transitionSource, setTransitionSource] = useState<ImageData | null>(null);
   const [revealFrame, setRevealFrame] = useState<ImageData | null>(null);
   const [revealRadius, setRevealRadius] = useState(0);
   const previousFilterRef = useRef(filterName);
-  const transitionEnabled = !compareMode && !showBefore;
+  const showOriginal = viewMode === "original";
+  const activeFrame =
+    viewMode === "original"
+      ? sourceImageData
+      : viewMode === "studio"
+        ? (studioImageData ?? filteredImageData)
+        : filteredImageData;
+  // Respect prefers-reduced-motion: skip the magic reveal transition
+  // entirely. The compare slider and view toggle still work; only the
+  // blur-and-clip transition is suppressed.
+  const prefersReducedMotion = usePrefersReducedMotion();
+  const transitionEnabled = !compareMode && !showOriginal && !prefersReducedMotion;
+
+  const liveClipping = useMemo<ClippingChannels | null>(() => {
+    if (activeFrame) {
+      return detectClippingFromImageData(activeFrame, 0.25);
+    }
+    return sourceAnalysis?.clippingChannels ?? null;
+  }, [activeFrame, sourceAnalysis]);
 
   const clearReveal = useCallback(() => {
     window.cancelAnimationFrame(revealRafRef.current);
@@ -100,6 +132,19 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
     stage.style.setProperty("--filtr-compare-position", `${comparePosition}%`);
   }, [comparePosition, image, zoom]);
 
+  // Apply the cursor-anchored scroll offset produced by the wheel handler.
+  // This is a layout effect so the scroll lands on the same frame the
+  // canvas resizes — no visible jump between the zoom change and the
+  // scroll snap. The ref is the trigger: we read it, clear it, and apply.
+  useLayoutEffect(() => {
+    const pending = pendingScrollRef.current;
+    const container = scrollContainerRef.current;
+    if (!pending || !container) return;
+    pendingScrollRef.current = null;
+    container.scrollLeft = pending.left;
+    container.scrollTop = pending.top;
+  });
+
   const drawSingleFrame = useCallback((canvas: HTMLCanvasElement | null, frame: ImageData | null) => {
     if (!canvas) return;
 
@@ -130,18 +175,18 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
 
     context.clearRect(0, 0, source.width, source.height);
 
-    if (showBefore || !filteredImageData) {
+    if (showOriginal || !activeFrame) {
       context.putImageData(source, 0, 0);
       return;
     }
 
-    context.putImageData(filteredImageData, 0, 0);
+    context.putImageData(activeFrame, 0, 0);
 
     if (compareMode) {
       const splitX = Math.max(0, Math.min(source.width, Math.round(source.width * (comparePosition / 100))));
       context.putImageData(source, 0, 0, 0, 0, splitX, source.height);
     }
-  }, [compareMode, comparePosition, filteredImageData, showBefore, sourceImageData]);
+  }, [activeFrame, compareMode, comparePosition, showOriginal, sourceImageData]);
 
   useEffect(() => {
     if (!transitionEnabled) {
@@ -193,12 +238,12 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
       return;
     }
 
-    drawSingleFrame(baseCanvas, transitionSource ?? stableFrame ?? filteredImageData ?? sourceImageData);
+    drawSingleFrame(baseCanvas, transitionSource ?? stableFrame ?? activeFrame);
     drawSingleFrame(revealCanvas, revealFrame);
   }, [
+    activeFrame,
     drawCompositeFrame,
     drawSingleFrame,
-    filteredImageData,
     revealFrame,
     sourceImageData,
     stableFrame,
@@ -245,13 +290,13 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
         }
       }
 
-      if (!compareMode || showBefore) return;
+      if (!compareMode || showOriginal) return;
 
       event.preventDefault();
       updateCompareFromClientX(event.clientX);
       event.currentTarget.setPointerCapture(event.pointerId);
     },
-    [compareMode, showBefore, updateCompareFromClientX, zoom],
+    [compareMode, showOriginal, updateCompareFromClientX, zoom],
   );
 
   const handlePointerMove = useCallback(
@@ -271,10 +316,10 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
         return;
       }
 
-      if (!compareMode || showBefore || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
+      if (!compareMode || showOriginal || !event.currentTarget.hasPointerCapture(event.pointerId)) return;
       updateCompareFromClientX(event.clientX);
     },
-    [compareMode, onZoomChange, showBefore, updateCompareFromClientX],
+    [compareMode, onZoomChange, showOriginal, updateCompareFromClientX],
   );
 
   const handlePointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -284,6 +329,88 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
       pinchStartRef.current = null;
     }
   }, []);
+
+  // Mouse wheel / trackpad zoom. Both the discrete wheel (mouse) and the
+  // smooth trackpad pinch (`ctrlKey: true` on macOS) land here. We anchor
+  // the zoom to the cursor so the pixel under the pointer stays under the
+  // pointer — the standard image-editor behavior.
+  const handleWheel = useCallback(
+    (event: React.WheelEvent<HTMLDivElement>) => {
+      if (!image) return;
+      // Let Shift+wheel scroll horizontally as the browser does natively.
+      if (event.shiftKey) return;
+
+      const stage = stageRef.current;
+      const container = scrollContainerRef.current;
+      if (!stage || !container) return;
+
+      event.preventDefault();
+
+      // Trackpad pinch (ctrlKey + deltaY) gives a smooth, fine-grained
+      // signal. A regular mouse wheel gives discrete notches with no
+      // ctrlKey. We treat the two with different step sizes.
+      let nextZoom: number;
+      if (event.ctrlKey) {
+        // Trackpad pinch: scale the current zoom by a small factor.
+        const factor = Math.exp(-event.deltaY / 100);
+        nextZoom = clampZoom(zoom * factor);
+      } else {
+        // Mouse wheel: ±10% per notch. `event.deltaY > 0` means wheel-down
+        // which conventionally zooms out.
+        const step = 10;
+        nextZoom = clampZoom(zoom + (event.deltaY < 0 ? step : -step));
+      }
+      if (nextZoom === zoom) return;
+
+      // Predict the new stage dimensions so we can anchor the cursor. The
+      // stage is the canvas wrapper; its width/height equal the canvas
+      // display size, which is `image.width * scale * (zoom / 100)`.
+      const maxWidth = 1200;
+      const maxHeight = 800;
+      const scale = Math.min(maxWidth / image.width, maxHeight / image.height, 1);
+      const oldStageWidth = stage.offsetWidth;
+      const oldStageHeight = stage.offsetHeight;
+      const newStageWidth = image.width * scale * (nextZoom / 100);
+      const newStageHeight = image.height * scale * (nextZoom / 100);
+      if (oldStageWidth === 0 || oldStageHeight === 0) {
+        onZoomChange(nextZoom);
+        return;
+      }
+
+      const stageRect = stage.getBoundingClientRect();
+      const containerRect = container.getBoundingClientRect();
+      // Cursor position relative to the stage (the canvas wrapper).
+      const cursorInStageX = event.clientX - stageRect.left;
+      const cursorInStageY = event.clientY - stageRect.top;
+      // Express the cursor as a fraction of the current stage, then map
+      // that fraction onto the new stage size. The scroll offset we need
+      // is whatever places that same canvas point back under the cursor.
+      const fractionX = cursorInStageX / oldStageWidth;
+      const fractionY = cursorInStageY / oldStageHeight;
+      const targetXInNewStage = fractionX * newStageWidth;
+      const targetYInNewStage = fractionY * newStageHeight;
+      // Convert from "stage coords" to "container scroll coords" using
+      // the post-zoom layout. The stage is centered in the container
+      // (flex items-center justify-center), so its left edge within the
+      // container is (containerWidth - stageWidth) / 2 minus the current
+      // scroll on that axis.
+      const containerWidth = container.clientWidth;
+      const containerHeight = container.clientHeight;
+      const stageLeftInContainer = (containerWidth - newStageWidth) / 2;
+      const stageTopInContainer = (containerHeight - newStageHeight) / 2;
+      const cursorXInContainer = event.clientX - containerRect.left + container.scrollLeft;
+      const cursorYInContainer = event.clientY - containerRect.top + container.scrollTop;
+      const newScrollLeft = cursorXInContainer - stageLeftInContainer - targetXInNewStage;
+      const newScrollTop = cursorYInContainer - stageTopInContainer - targetYInNewStage;
+
+      pendingScrollRef.current = {
+        left: Math.max(0, newScrollLeft),
+        top: Math.max(0, newScrollTop),
+      };
+      onZoomChange(nextZoom);
+    },
+    [image, onZoomChange, zoom],
+  );
 
   if (!image || !sourceImageData) return null;
 
@@ -307,14 +434,18 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
     : undefined;
 
   return (
-    <div className="flex-1 flex items-center justify-center overflow-auto p-4">
+    <div
+      ref={scrollContainerRef}
+      className="flex-1 flex items-center justify-center overflow-auto p-4"
+    >
       <div
         ref={stageRef}
-        className={`filtr-stage relative ${compareMode && !showBefore ? "cursor-ew-resize touch-none" : ""}`}
+        className={`filtr-stage relative ${compareMode && !showOriginal ? "cursor-ew-resize touch-none" : "cursor-zoom-in"}`}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
+        onWheel={handleWheel}
       >
         <canvas
           ref={baseCanvasRef}
@@ -333,7 +464,7 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
             <div className="filtr-render-aura absolute inset-[12%] rounded-[28px]" />
           </div>
         ) : null}
-        {compareMode && !showBefore ? (
+        {compareMode && !showOriginal ? (
           <div className="pointer-events-none absolute inset-y-0 z-10 left-[var(--filtr-compare-position)] -translate-x-1/2">
             <div className="relative h-full">
               <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/90 shadow-[0_0_18px_rgba(255,255,255,0.28)]" />
@@ -346,7 +477,7 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
             </div>
           </div>
         ) : null}
-        {isProcessing ? (
+        {isProcessing || studioIsProcessing ? (
           <>
             <div className="pointer-events-none absolute bottom-4 right-4 rounded-full border border-white/10 bg-background/80 px-3 py-1 font-mono-ui text-[10px] uppercase tracking-[0.18em] text-foreground shadow-lg backdrop-blur-md">
               Rendering
@@ -355,6 +486,15 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
               {filterName}
             </div>
           </>
+        ) : null}
+        {sourceAnalysis && liveClipping ? (
+          <div className="absolute right-4 top-4 z-10">
+            <HistogramBadge
+              histogram={sourceAnalysis.histogram}
+              channelHistogram={sourceAnalysis.channelHistogram}
+              clipping={liveClipping}
+            />
+          </div>
         ) : null}
       </div>
     </div>
