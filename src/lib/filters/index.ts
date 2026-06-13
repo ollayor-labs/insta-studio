@@ -624,22 +624,39 @@ export function prepareFilterSettings(
   };
 }
 
+export interface FilterAbortSignal {
+  readonly aborted: boolean;
+}
+
 export function applyFilter(
   pixelData: Uint8ClampedArray,
   width: number,
   height: number,
   settings: ResolvedFilterSettings,
+  /**
+   * Optional abort signal. The engine checks `signal.aborted` between
+   * top-level passes (base, detail, bloom, final, monochrome, blend) and
+   * short-circuits when set. The pixel buffer is left in an intermediate
+   * state on abort; the caller (typically the filter worker) is
+   * responsible for discarding it and not transferring the result back
+   * to the main thread.
+   */
+  signal?: FilterAbortSignal,
 ): void {
   const original = new Uint8ClampedArray(pixelData);
 
   renderBasePass(original, pixelData, width, height, settings);
+  if (signal?.aborted) return;
   applyDetailPass(pixelData, width, height, settings.adjustments.clarity, settings.adjustments.sharpness, settings.quality);
+  if (signal?.aborted) return;
   applyBloomPass(pixelData, width, height, settings.adjustments.bloom, settings.quality);
+  if (signal?.aborted) return;
   finalPass(pixelData, width, height, settings.adjustments);
 
   if (settings.adjustments.saturation <= -100 && settings.adjustments.vibrance <= -100) {
     enforceMonochrome(pixelData);
   }
+  if (signal?.aborted) return;
 
   blendEffectIntensity(original, pixelData, settings.effectIntensity);
 }
