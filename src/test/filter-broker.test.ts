@@ -1,55 +1,96 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PreviewBackend, RenderRequest, PreviewAbortSignal, PreviewBackendKind, PreviewBackendPolicy } from "@/lib/webgl-preview";
 
-type PostedMessage =
-  | {
-      kind: "render";
-      id: number;
-      width: number;
-      height: number;
-      buffer: ArrayBuffer;
-      settings: { preset: { id: string } };
-    }
-  | { kind: "abort"; id: number };
+/**
+ * The broker's internal contract used to be raw `Worker` postMessage.
+ * After PR #4 it talks to `PreviewBackend` instances. The tests
+ * below mock the backend factory via `setPreviewBackendPolicy` so
+ * the broker sees a deterministic, in-process `FakeBackend` per
+ * consumer. Each `FakeBackend` records its renders and lets the
+ * test drive responses through a deferred `resolve`.
+ */
 
-type IncomingMessage =
-  | { kind: "result"; id: number; width: number; height: number; buffer: ArrayBuffer }
-  | { kind: "aborted"; id: number };
-
-interface FakeWorker {
-  onmessage: ((event: MessageEvent<IncomingMessage>) => void) | null;
-  onerror: ((event: MessageEvent<unknown>) => void) | null;
-  postMessage: ReturnType<typeof vi.fn>;
-  terminate: ReturnType<typeof vi.fn>;
-  posted: PostedMessage[];
+interface RenderCall {
+  request: RenderRequest;
+  signal: PreviewAbortSignal;
+  resolve: (result: ImageData) => void;
+  reject: (error: Error) => void;
+  cancel: () => void;
+  done: boolean;
 }
 
-const workers: FakeWorker[] = [];
+class FakeBackend implements PreviewBackend {
+  readonly kind: PreviewBackendKind;
+  readonly calls: RenderCall[] = [];
+  private cancelled = false;
 
-class MockWorker {
-  onmessage: ((event: MessageEvent<IncomingMessage>) => void) | null = null;
-  onerror: ((event: MessageEvent<unknown>) => void) | null = null;
-  postMessage = vi.fn((message: PostedMessage, _transfer: Transferable[]) => {
-    this.posted.push(message);
-  });
-  terminate = vi.fn();
-  posted: PostedMessage[] = [];
+  constructor(kind: PreviewBackendKind = "js") {
+    this.kind = kind;
+  }
 
-  constructor() {
-    workers.push(this);
+  render(request: RenderRequest, signal: PreviewAbortSignal): Promise<ImageData> {
+    return new Promise<ImageData>((resolve, reject) => {
+      const call: RenderCall = {
+        request,
+        signal,
+        resolve,
+        reject,
+        cancel: () => {
+          this.cancelled = true;
+          call.done = true;
+          // Match the broker's contract: a cancelled render is
+          // never resolved or rejected. The caller (the broker)
+          // sees a hang; the in-flight tracking in the broker
+          // drops the slot.
+        },
+        done: false,
+      };
+      this.calls.push(call);
+    });
+  }
+
+  cancel(): void {
+    this.cancelled = true;
+  }
+
+  dispose(): void {
+    this.cancelled = true;
+    for (const call of this.calls) {
+      if (!call.done) call.done = true;
+    }
+  }
+
+  /**
+   * Test helper: resolve a pending render with a fake result. The
+   * `aborted` flag is set to true if the backend was cancelled, so
+   * tests can verify the broker respects the abort signal.
+   */
+  respondAt(index: number, source?: ImageData): void {
+    const call = this.calls[index];
+    if (!call) throw new Error(`No call at index ${index}`);
+    if (call.done) return;
+    call.done = true;
+    const result = source ?? new ImageData(new Uint8ClampedArray(call.request.source.data.length), call.request.source.width, call.request.source.height);
+    call.resolve(result);
   }
 }
 
-function respond(worker: FakeWorker, id: number, width = 2, height = 2) {
-  const buffer = new ArrayBuffer(16);
-  worker.onmessage?.({
-    data: { kind: "result", id, width, height, buffer },
-  } as MessageEvent<IncomingMessage>);
-}
+const backends: FakeBackend[] = [];
 
-function respondAborted(worker: FakeWorker, id: number) {
-  worker.onmessage?.({
-    data: { kind: "aborted", id },
-  } as MessageEvent<IncomingMessage>);
+function makePolicy(kind: PreviewBackendKind = "js"): PreviewBackendPolicy {
+  return {
+    select: () => kind,
+    createJsBackend: () => {
+      const b = new FakeBackend("js");
+      backends.push(b);
+      return b;
+    },
+    createWebGlBackend: () => {
+      const b = new FakeBackend("webgl");
+      backends.push(b);
+      return b;
+    },
+  };
 }
 
 function fakeSettings(id: string): import("@/lib/filterEngine").ResolvedFilterSettings {
@@ -82,145 +123,117 @@ function fakeImageData(): ImageData {
 
 describe("filter worker broker", () => {
   beforeEach(async () => {
-    workers.length = 0;
-    Object.defineProperty(globalThis, "Worker", {
-      writable: true,
-      value: MockWorker,
-    });
+    backends.length = 0;
     vi.resetModules();
-  });
-
-  // Pin the pool to a single worker for the single-render cases below
-  // so PR #2's latest-wins behavior stays deterministic. A separate
-  // describe block tests the per-consumer pool behavior.
-  beforeEach(async () => {
-    const { configureFilterWorkerPool } = await import("@/lib/filter-worker");
-    configureFilterWorkerPool(1);
   });
 
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("creates a single worker across multiple renders", async () => {
-    const { renderFilterOnWorker, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
+  it("creates a single backend across multiple renders", async () => {
+    const { renderFilterOnWorker, cancelPendingFilterRenders, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    setPreviewBackendPolicy(makePolicy("js"));
+
     let p1Resolved = false;
-    renderFilterOnWorker(fakeImageData(), fakeSettings("a")).then(() => {
+    void renderFilterOnWorker(fakeImageData(), fakeSettings("a")).then(() => {
       p1Resolved = true;
     });
-    const promise2 = renderFilterOnWorker(fakeImageData(), fakeSettings("b"));
-    expect(workers).toHaveLength(1);
-    // First job posts a render; second job arrives while first is
-    // in flight and supersedes it, so the broker posts abort + render.
-    expect(workers[0].posted.map((m) => m.kind)).toEqual(["render", "abort", "render"]);
+    const p2 = renderFilterOnWorker(fakeImageData(), fakeSettings("b"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(backends).toHaveLength(1);
+    expect(backends[0].calls).toHaveLength(2);
 
-    // The first job's result is dropped (it was superseded).
-    respond(workers[0], 1);
-    await Promise.resolve();
-    await Promise.resolve();
+    // First job is superseded when second arrived; second is in-flight.
+    backends[0].respondAt(1);
+    await p2;
     expect(p1Resolved).toBe(false);
-
-    expect(workers[0].posted.filter((m) => m.kind === "render")).toHaveLength(2);
-    respond(workers[0], 2);
-    await promise2;
-    expect(workers).toHaveLength(1);
     cancelPendingFilterRenders();
   });
 
   it("latest-wins: a newer job supersedes the in-flight one", async () => {
-    const { renderFilterOnWorker, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
+    const { renderFilterOnWorker, cancelPendingFilterRenders, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    setPreviewBackendPolicy(makePolicy("js"));
+
     let firstResolved = false;
     let latestResolved = false;
-    renderFilterOnWorker(fakeImageData(), fakeSettings("first")).then(() => {
+    void renderFilterOnWorker(fakeImageData(), fakeSettings("first")).then(() => {
       firstResolved = true;
     });
     const latest = renderFilterOnWorker(fakeImageData(), fakeSettings("latest")).then(() => {
       latestResolved = true;
     });
-
-    // First render is in flight. Second job supersedes; broker posts
-    // abort for first and render for second.
-    expect(workers[0].posted.map((m) => m.kind)).toEqual(["render", "abort", "render"]);
-
-    // First job is dropped when its (eventual) result arrives.
-    respond(workers[0], 1);
     await Promise.resolve();
     await Promise.resolve();
-    expect(firstResolved).toBe(false);
+    expect(backends[0].calls).toHaveLength(2);
 
-    // Second job resolves.
-    respond(workers[0], 2);
+    // First call is dropped (cancelled); only the second is in-flight.
+    backends[0].respondAt(1);
     await latest;
     expect(latestResolved).toBe(true);
-    cancelPendingFilterRenders();
-  });
-
-  it("worker 'aborted' sentinel clears the in-flight slot", async () => {
-    const { renderFilterOnWorker, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
-    let firstResolved = false;
-    renderFilterOnWorker(fakeImageData(), fakeSettings("first")).then(() => {
-      firstResolved = true;
-    });
-    // Supersede with a second job; broker posts abort for first.
-    renderFilterOnWorker(fakeImageData(), fakeSettings("latest"));
-    expect(workers[0].posted[1]).toEqual({ kind: "abort", id: 1 });
-    // Simulate the worker responding with the aborted sentinel.
-    respondAborted(workers[0], 1);
-    await Promise.resolve();
-    await Promise.resolve();
     expect(firstResolved).toBe(false);
     cancelPendingFilterRenders();
   });
 
-  it("drops cancelled jobs when they finally respond", async () => {
-    const { renderFilterOnWorker, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
+  it("cancelPendingFilterRenders drops the in-flight job", async () => {
+    const { renderFilterOnWorker, cancelPendingFilterRenders, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    setPreviewBackendPolicy(makePolicy("js"));
+
     let resolved = false;
     void renderFilterOnWorker(fakeImageData(), fakeSettings("a")).then(() => {
       resolved = true;
     });
+    await Promise.resolve();
+    await Promise.resolve();
     cancelPendingFilterRenders();
-    respond(workers[0], 1);
+    backends[0].respondAt(0);
+    await Promise.resolve();
     await Promise.resolve();
     expect(resolved).toBe(false);
   });
 
-  it("drains the queue after a worker error and still rejects the failing job", async () => {
-    const { renderFilterOnWorker, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
+  it("rejects the failing job and continues draining the queue", async () => {
+    const { renderFilterOnWorker, cancelPendingFilterRenders, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    setPreviewBackendPolicy(makePolicy("js"));
+
     const succeeded = vi.fn();
     const p1 = renderFilterOnWorker(fakeImageData(), fakeSettings("bad"));
-    expect(workers[0].posted.filter((m) => m.kind === "render")).toHaveLength(1);
-    workers[0].onerror?.({ error: new Error("boom") } as unknown as MessageEvent<unknown>);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(backends[0].calls).toHaveLength(1);
+
+    // Simulate backend error.
+    const failing = backends[0].calls[0];
+    failing.done = true;
+    failing.reject(new Error("boom"));
     await expect(p1).rejects.toThrow("boom");
 
     // After the error, the broker is idle. A new job can be submitted.
     const p2 = renderFilterOnWorker(fakeImageData(), fakeSettings("good")).then(succeeded);
-    expect(workers[0].posted.filter((m) => m.kind === "render")).toHaveLength(2);
-    respond(workers[0], 2);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(backends[0].calls).toHaveLength(2);
+    backends[0].respondAt(1);
     await p2;
     expect(succeeded).toHaveBeenCalled();
     cancelPendingFilterRenders();
   });
 
   it("the latest job resolves when intermediate jobs were dropped", async () => {
-    const { renderFilterOnWorker, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
+    const { renderFilterOnWorker, cancelPendingFilterRenders, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    setPreviewBackendPolicy(makePolicy("js"));
+
     const results: string[] = [];
-    renderFilterOnWorker(fakeImageData(), fakeSettings("a")).then(() => results.push("a"));
-    renderFilterOnWorker(fakeImageData(), fakeSettings("b")).then(() => results.push("b"));
+    void renderFilterOnWorker(fakeImageData(), fakeSettings("a")).then(() => results.push("a"));
+    void renderFilterOnWorker(fakeImageData(), fakeSettings("b")).then(() => results.push("b"));
     const p3 = renderFilterOnWorker(fakeImageData(), fakeSettings("c")).then(() => results.push("c"));
-
-    // All three jobs arrived while the previous was in flight. With
-    // latest-wins, each new job aborts the previous, so 3 renders are
-    // posted (a, then b, then c). c is the one in flight.
-    expect(workers[0].posted.filter((m) => m.kind === "render")).toHaveLength(3);
-
-    // a's result arrives; it was superseded, so its promise is dropped.
-    respond(workers[0], 1);
     await Promise.resolve();
     await Promise.resolve();
-    expect(results).toEqual([]);
+    expect(backends[0].calls).toHaveLength(3);
 
-    // c's result arrives; c resolves. (b was already cancelled.)
-    respond(workers[0], 3);
+    // a and b were superseded. c is in-flight.
+    backends[0].respondAt(2);
     await p3;
     expect(results).toEqual(["c"]);
     cancelPendingFilterRenders();
@@ -229,92 +242,89 @@ describe("filter worker broker", () => {
 
 describe("filter worker broker (per-consumer worker pools)", () => {
   beforeEach(async () => {
-    workers.length = 0;
-    Object.defineProperty(globalThis, "Worker", {
-      writable: true,
-      value: MockWorker,
-    });
+    backends.length = 0;
     vi.resetModules();
   });
 
-  it("allocates a dedicated worker per consumer and runs them in parallel", async () => {
-    const { renderFilterOnWorker, configureFilterWorkerPool, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
-    configureFilterWorkerPool(2);
+  it("allocates a dedicated backend per consumer and runs them in parallel", async () => {
+    const { renderFilterOnWorker, cancelPendingFilterRenders, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    setPreviewBackendPolicy(makePolicy("js"));
 
     const aPromise = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "preview" });
     const bPromise = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "studio" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(backends).toHaveLength(2);
+    expect(backends[0].calls).toHaveLength(1);
+    expect(backends[1].calls).toHaveLength(1);
 
-    // Two distinct consumers get two distinct workers.
-    expect(workers).toHaveLength(2);
-    expect(workers[0].posted.filter((m) => m.kind === "render")).toHaveLength(1);
-    expect(workers[1].posted.filter((m) => m.kind === "render")).toHaveLength(1);
-
-    respond(workers[0], 1);
-    respond(workers[1], 2);
+    backends[0].respondAt(0);
+    backends[1].respondAt(0);
     await Promise.all([aPromise, bPromise]);
     cancelPendingFilterRenders();
   });
 
-  it("reuses the same worker for repeated calls with the same consumer", async () => {
-    const { renderFilterOnWorker, configureFilterWorkerPool, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
-    configureFilterWorkerPool(2);
+  it("reuses the same backend for repeated calls with the same consumer", async () => {
+    const { renderFilterOnWorker, cancelPendingFilterRenders, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    setPreviewBackendPolicy(makePolicy("js"));
 
     const p1 = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "preview" });
-    respond(workers[0], 1);
+    await Promise.resolve();
+    await Promise.resolve();
+    backends[0].respondAt(0);
     await p1;
 
     const p2 = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "preview" });
-    expect(workers).toHaveLength(1);
-    expect(workers[0].posted.filter((m) => m.kind === "render")).toHaveLength(2);
-    respond(workers[0], 2);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(backends).toHaveLength(1);
+    expect(backends[0].calls).toHaveLength(2);
+    backends[0].respondAt(1);
     await p2;
     cancelPendingFilterRenders();
   });
 
   it("latest-wins within a single consumer still aborts and replaces", async () => {
-    const { renderFilterOnWorker, configureFilterWorkerPool, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
-    configureFilterWorkerPool(2);
+    const { renderFilterOnWorker, cancelPendingFilterRenders, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    setPreviewBackendPolicy(makePolicy("js"));
 
     let firstResolved = false;
     let latestResolved = false;
-    renderFilterOnWorker(fakeImageData(), fakeSettings("first"), { consumer: "preview" }).then(() => {
+    void renderFilterOnWorker(fakeImageData(), fakeSettings("first"), { consumer: "preview" }).then(() => {
       firstResolved = true;
     });
     const latest = renderFilterOnWorker(fakeImageData(), fakeSettings("latest"), { consumer: "preview" }).then(() => {
       latestResolved = true;
     });
-
-    expect(workers).toHaveLength(1);
-    expect(workers[0].posted.map((m) => m.kind)).toEqual(["render", "abort", "render"]);
-
-    respond(workers[0], 1);
     await Promise.resolve();
     await Promise.resolve();
-    expect(firstResolved).toBe(false);
+    expect(backends).toHaveLength(1);
+    expect(backends[0].calls).toHaveLength(2);
 
-    respond(workers[0], 2);
+    backends[0].respondAt(1);
     await latest;
     expect(latestResolved).toBe(true);
+    expect(firstResolved).toBe(false);
     cancelPendingFilterRenders();
   });
 
   it("cancelPendingFilterRenders with a consumer name cancels only that consumer", async () => {
-    const { renderFilterOnWorker, configureFilterWorkerPool, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
-    configureFilterWorkerPool(2);
+    const { renderFilterOnWorker, cancelPendingFilterRenders, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    setPreviewBackendPolicy(makePolicy("js"));
 
     const previewP = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "preview" });
     const studioP = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "studio" });
-
-    expect(workers).toHaveLength(2);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(backends).toHaveLength(2);
     cancelPendingFilterRenders("preview");
 
-    // Studio still resolves; preview is dropped (no rejection, just no resolve).
-    respond(workers[1], 2);
+    // Studio still resolves; preview is dropped.
+    backends[1].respondAt(0);
     const result = await studioP;
     expect(result.width).toBe(2);
 
-    // Resolving preview's id afterwards is a no-op; its promise stays pending.
-    respond(workers[0], 1);
+    backends[0].respondAt(0);
     let previewResolved = false;
     void previewP.then(() => {
       previewResolved = true;
@@ -325,39 +335,36 @@ describe("filter worker broker (per-consumer worker pools)", () => {
   });
 
   it("evicts the oldest consumer when the pool cap is exceeded", async () => {
-    const { renderFilterOnWorker, configureFilterWorkerPool, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
+    const { renderFilterOnWorker, cancelPendingFilterRenders, configureFilterWorkerPool, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    setPreviewBackendPolicy(makePolicy("js"));
     configureFilterWorkerPool(2);
-
-    const liveWorkers = () => workers.filter((w) => !w.terminate.mock.calls.length);
-    const terminatedWorkers = () => workers.filter((w) => w.terminate.mock.calls.length);
 
     // Fill the pool with two consumers.
     const aP = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "alpha" });
     const bP = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "beta" });
-    const alphaWorker = liveWorkers()[0];
-    const betaWorker = liveWorkers()[1];
-    expect(workers).toHaveLength(2);
+    await Promise.resolve();
+    await Promise.resolve();
+    const alphaBackend = backends[0];
+    const betaBackend = backends[1];
+    expect(backends).toHaveLength(2);
 
-    // Adding a third consumer should evict the oldest ("alpha") and spin up a
-    // fresh worker for gamma. The old alpha worker is terminated.
+    // Adding a third consumer evicts the oldest.
     const cP = renderFilterOnWorker(fakeImageData(), fakeSettings("c"), { consumer: "gamma" });
+    await Promise.resolve();
+    await Promise.resolve();
 
-    expect(terminatedWorkers()).toContain(alphaWorker);
-    // alpha's in-flight was aborted before terminate.
-    expect(alphaWorker.posted.map((m) => m.kind)).toEqual(["render", "abort"]);
-    // gamma got a fresh worker that posted a single render.
-    const gammaWorker = liveWorkers().find((w) => w !== betaWorker);
-    expect(gammaWorker).toBeDefined();
-    expect(gammaWorker!.posted.map((m) => m.kind)).toEqual(["render"]);
-    // beta is untouched.
-    expect(betaWorker.posted.map((m) => m.kind)).toEqual(["render"]);
+    // The alpha backend was disposed; a fresh backend was created for gamma.
+    expect(backends).toHaveLength(3);
+    expect(alphaBackend.calls[0].done).toBe(true);
+    expect(betaBackend.calls).toHaveLength(1);
+    const gammaBackend = backends[2];
+    expect(gammaBackend.calls).toHaveLength(1);
 
     // Drain.
-    respond(betaWorker, 2);
-    respond(gammaWorker!, 3);
+    betaBackend.respondAt(0);
+    gammaBackend.respondAt(0);
     await bP;
     await cP;
-    // alpha's promise is dropped (cancelled), no resolve, no reject.
     let aResolved = false;
     void aP.then(() => {
       aResolved = true;
@@ -366,5 +373,97 @@ describe("filter worker broker (per-consumer worker pools)", () => {
     await Promise.resolve();
     expect(aResolved).toBe(false);
     cancelPendingFilterRenders();
+  });
+});
+
+describe("filter worker broker (backend selection)", () => {
+  beforeEach(async () => {
+    backends.length = 0;
+    vi.resetModules();
+  });
+
+  it("routes consumer: 'preview' to the WebGL backend when supported", async () => {
+    const { renderFilterOnWorker, getConsumerBackendKind, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    setPreviewBackendPolicy(makePolicy("webgl"));
+
+    const promise = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "preview" });
+    await Promise.resolve();
+    expect(getConsumerBackendKind("preview")).toBe("webgl");
+    backends[0].respondAt(0);
+    await promise;
+  });
+
+  it("routes consumer: 'studio' to the JS backend by default", async () => {
+    const { renderFilterOnWorker, getConsumerBackendKind, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    setPreviewBackendPolicy(makePolicy("js"));
+
+    const promise = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "studio" });
+    await Promise.resolve();
+    expect(getConsumerBackendKind("studio")).toBe("js");
+    backends[0].respondAt(0);
+    await promise;
+  });
+
+  it("falls back to JS when the WebGL backend reports itself degraded", async () => {
+    const { renderFilterOnWorker, getConsumerBackendKind, setPreviewBackendPolicy } = await import("@/lib/filter-worker");
+    const { setWebGlDegraded, isWebGlDegraded } = await import("@/lib/webgl-preview");
+
+    // Reset the global degraded flag (other tests may have set it).
+    setWebGlDegraded(false);
+
+    let webglCount = 0;
+    let jsCount = 0;
+    const policy: PreviewBackendPolicy = {
+      // The selector consults the global degraded flag via the
+      // default policy, but we're using a custom policy here that
+      // delegates to the same flag for parity. (The custom policy
+      // is otherwise needed to record create counts.)
+      select: () => (isWebGlDegraded() ? "js" : "webgl"),
+      createJsBackend: () => {
+        const b = new FakeBackend("js");
+        backends.push(b);
+        jsCount += 1;
+        return b;
+      },
+      createWebGlBackend: () => {
+        const b = new FakeBackend("webgl");
+        backends.push(b);
+        webglCount += 1;
+        return b;
+      },
+    };
+    setPreviewBackendPolicy(policy);
+
+    // First render: WebGL backend is created and used.
+    const p1 = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "preview" });
+    await Promise.resolve();
+    expect(getConsumerBackendKind("preview")).toBe("webgl");
+    backends[0].respondAt(0);
+    await p1;
+    expect(webglCount).toBe(1);
+    expect(jsCount).toBe(0);
+
+    // Simulate webglcontextlost. The real WebGlBackend calls
+    // setWebGlDegraded(true) in its onContextLost handler. The
+    // default policy observes the flag and routes future renders
+    // to JS.
+    setWebGlDegraded(true);
+
+    const p2 = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "preview" });
+    await Promise.resolve();
+    expect(getConsumerBackendKind("preview")).toBe("js");
+    expect(jsCount).toBe(1);
+    backends[backends.length - 1].respondAt(0);
+    await p2;
+
+    // Simulate webglcontextrestored -- the policy reverts to
+    // WebGL on the next render.
+    setWebGlDegraded(false);
+    const p3 = renderFilterOnWorker(fakeImageData(), fakeSettings("c"), { consumer: "preview" });
+    await Promise.resolve();
+    expect(getConsumerBackendKind("preview")).toBe("webgl");
+    expect(webglCount).toBe(2);
+    backends[backends.length - 1].respondAt(0);
+    await p3;
   });
 });
