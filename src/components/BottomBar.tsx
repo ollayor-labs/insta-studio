@@ -1,19 +1,13 @@
-import React, { useCallback, useEffect, useState } from "react";
-import { Copy, Download, ImageDown, Play, SplitSquareVertical, ZoomIn, ZoomOut } from "lucide-react";
-import { prepareFilterSettings, type Adjustments, type ImageAnalysis } from "@/lib/filterEngine";
-import { renderFilterOnWorker } from "@/lib/filter-worker";
-import { resolveExportExtension, resolveExportMime } from "@/lib/exportFormat";
-import { getExifOrientation, withExifInjected } from "@/lib/exif";
-import {
-  showCopyFailedToast,
-  showCopyToast,
-  showDownloadToast,
-} from "@/lib/editorToasts";
+import React, { useCallback, useEffect, useState } from 'react';
+import { Copy, Download, ImageDown, Play, SplitSquareVertical, ZoomIn, ZoomOut } from 'lucide-react';
+import { prepareFilterSettings, type Adjustments, type ImageAnalysis } from '@/lib/filterEngine';
+import { renderFilterOnWorker } from '@/lib/filter-worker';
+import { resolveExportExtension, resolveExportMime } from '@/lib/exportFormat';
+import { getExifOrientation, withExifInjected } from '@/lib/exif';
+import { showCopyFailedToast, showCopyToast, showDownloadToast } from '@/lib/editorToasts';
 
-type ExportSize = "original" | "2x" | "50%";
-type ExportFormat = "jpeg" | "png" | "webp" | "original";
-
-
+type ExportSize = 'original' | '2x' | '50%';
+type ExportFormat = 'jpeg' | 'png' | 'webp' | 'original';
 
 interface BottomBarProps {
   fullImageData: ImageData | null;
@@ -25,11 +19,11 @@ interface BottomBarProps {
   fileName: string;
   sourceMimeType: string | null;
   currentExifBytes: Uint8Array | null;
-  viewMode: "edited" | "original" | "studio";
-  onViewModeChange: (value: "edited" | "original" | "studio") => void;
+  viewMode: 'edited' | 'original' | 'studio';
+  onViewModeChange: (value: 'edited' | 'original' | 'studio') => void;
   compareMode: boolean;
   onCompareModeChange: (value: boolean) => void;
-  compareReveal: "off" | "playing";
+  compareReveal: 'off' | 'playing';
   onPlayReveal: () => void;
   zoom: number;
   onZoomChange: (value: number) => void;
@@ -40,28 +34,24 @@ type RenderCanvas = HTMLCanvasElement | OffscreenCanvas;
 
 function formatTimestamp(date = new Date()): string {
   const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  const hour = `${date.getHours()}`.padStart(2, "0");
-  const minute = `${date.getMinutes()}`.padStart(2, "0");
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  const hour = `${date.getHours()}`.padStart(2, '0');
+  const minute = `${date.getMinutes()}`.padStart(2, '0');
   return `${year}${month}${day}_${hour}${minute}`;
 }
 
-function createExportName(
-  filterName: string,
-  format: ExportFormat,
-  sourceMimeType: string | null = null,
-): string {
+function createExportName(filterName: string, format: ExportFormat, sourceMimeType: string | null = null): string {
   const extension = resolveExportExtension(format, sourceMimeType);
-  return `insta-studio_${filterName.toLowerCase().replace(/\s+/g, "_")}_${formatTimestamp()}.${extension}`;
+  return `insta-studio_${filterName.toLowerCase().replace(/\s+/g, '_')}_${formatTimestamp()}.${extension}`;
 }
 
 function createCanvas(width: number, height: number): RenderCanvas {
-  if (typeof OffscreenCanvas !== "undefined") {
+  if (typeof OffscreenCanvas !== 'undefined') {
     return new OffscreenCanvas(width, height);
   }
 
-  const canvas = document.createElement("canvas");
+  const canvas = document.createElement('canvas');
   canvas.width = width;
   canvas.height = height;
   return canvas;
@@ -74,7 +64,7 @@ async function canvasToBlob(
   sourceMimeType: string | null = null,
 ): Promise<Blob> {
   const mime = resolveExportMime(format, sourceMimeType);
-  const isLossless = mime === "image/png";
+  const isLossless = mime === 'image/png';
   if (canvas instanceof OffscreenCanvas) {
     return canvas.convertToBlob({
       type: mime,
@@ -86,7 +76,7 @@ async function canvasToBlob(
     canvas.toBlob(
       (blob) => {
         if (!blob) {
-          reject(new Error("Could not generate export blob"));
+          reject(new Error('Could not generate export blob'));
           return;
         }
         resolve(blob);
@@ -98,7 +88,7 @@ async function canvasToBlob(
 }
 
 function applyWatermark(canvas: RenderCanvas): void {
-  const context = canvas.getContext("2d");
+  const context = canvas.getContext('2d');
   if (!context) return;
 
   const width = canvas.width;
@@ -106,11 +96,11 @@ function applyWatermark(canvas: RenderCanvas): void {
 
   context.save();
   context.globalAlpha = 0.1;
-  context.fillStyle = "#ffffff";
-  context.textAlign = "right";
-  context.textBaseline = "bottom";
+  context.fillStyle = '#ffffff';
+  context.textAlign = 'right';
+  context.textBaseline = 'bottom';
   context.font = `${Math.max(14, Math.round(width * 0.022))}px "DM Mono", monospace`;
-  context.fillText("insta-studio", width - Math.max(18, width * 0.025), height - Math.max(18, height * 0.025));
+  context.fillText('insta-studio', width - Math.max(18, width * 0.025), height - Math.max(18, height * 0.025));
   context.restore();
 }
 
@@ -132,9 +122,9 @@ function orientedDimensions(width: number, height: number, orientation: number):
 function drawImageDataToCanvas(imageData: ImageData, orientation: number): RenderCanvas {
   const { width, height } = orientedDimensions(imageData.width, imageData.height, orientation);
   const canvas = createCanvas(width, height);
-  const context = canvas.getContext("2d");
+  const context = canvas.getContext('2d');
   if (!context) {
-    throw new Error("Could not create export context");
+    throw new Error('Could not create export context');
   }
 
   if (orientation === 1) {
@@ -192,20 +182,20 @@ function drawImageDataToCanvas(imageData: ImageData, orientation: number): Rende
 }
 
 function resampleCanvas(source: RenderCanvas, size: ExportSize): RenderCanvas {
-  const scale = size === "2x" ? 2 : size === "50%" ? 0.5 : 1;
+  const scale = size === '2x' ? 2 : size === '50%' ? 0.5 : 1;
   if (scale === 1) return source;
 
   const canvas = createCanvas(
     Math.max(1, Math.round(source.width * scale)),
     Math.max(1, Math.round(source.height * scale)),
   );
-  const context = canvas.getContext("2d");
+  const context = canvas.getContext('2d');
   if (!context) {
-    throw new Error("Could not create resample context");
+    throw new Error('Could not create resample context');
   }
 
   context.imageSmoothingEnabled = true;
-  context.imageSmoothingQuality = "high";
+  context.imageSmoothingQuality = 'high';
   context.drawImage(source as CanvasImageSource, 0, 0, canvas.width, canvas.height);
   return canvas;
 }
@@ -217,7 +207,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
   effectIntensity,
   analysis,
   adjustments,
-  fileName,
+  _fileName,
   sourceMimeType,
   currentExifBytes,
   viewMode,
@@ -231,8 +221,8 @@ const BottomBar: React.FC<BottomBarProps> = ({
   exportSignal,
 }) => {
   const [quality, setQuality] = useState(95);
-  const [size, setSize] = useState<ExportSize>("original");
-  const [format, setFormat] = useState<ExportFormat>("jpeg");
+  const [size, setSize] = useState<ExportSize>('original');
+  const [format, setFormat] = useState<ExportFormat>('jpeg');
   const [watermark, setWatermark] = useState(false);
   const [copying, setCopying] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -249,14 +239,14 @@ const BottomBar: React.FC<BottomBarProps> = ({
           adjustments,
           {
             analysis,
-            quality: "export",
+            quality: 'export',
             strength: filterStrength,
             effectIntensity,
             // Run the export through the Float32 pipeline to keep sub-LSB
             // precision across the 5+ passes and avoid the per-pass
             // rounding that produces banding in smooth gradients. Preview
             // (the live canvas) stays on Uint8 for speed.
-            precision: "float32",
+            precision: 'float32',
           },
           analysis ?? undefined,
         );
@@ -283,11 +273,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
         // `lib/exif.ts` and is format-aware underneath, but the storage
         // shape we pass in is format-agnostic (bare TIFF) thanks to the
         // import-time reader.
-        if (
-          resolvedMime === "image/jpeg" ||
-          resolvedMime === "image/png" ||
-          resolvedMime === "image/webp"
-        ) {
+        if (resolvedMime === 'image/jpeg' || resolvedMime === 'image/png' || resolvedMime === 'image/webp') {
           return await withExifInjected(rawBlob, currentExifBytes);
         }
         return rawBlob;
@@ -295,14 +281,23 @@ const BottomBar: React.FC<BottomBarProps> = ({
         setExporting(false);
       }
     },
-    [adjustments, analysis, currentExifBytes, effectIntensity, filterName, filterStrength, fullImageData, sourceMimeType],
+    [
+      adjustments,
+      analysis,
+      currentExifBytes,
+      effectIntensity,
+      filterName,
+      filterStrength,
+      fullImageData,
+      sourceMimeType,
+    ],
   );
 
   const handleDownload = useCallback(async () => {
     const blob = await renderExportBlob(format, size, quality, watermark);
     if (!blob) return;
 
-    const link = document.createElement("a");
+    const link = document.createElement('a');
     link.download = createExportName(filterName, format, sourceMimeType);
     link.href = URL.createObjectURL(blob);
     link.click();
@@ -311,16 +306,16 @@ const BottomBar: React.FC<BottomBarProps> = ({
   }, [filterName, format, quality, renderExportBlob, size, sourceMimeType, watermark]);
 
   const handleCopy = useCallback(async () => {
-    const blob = await renderExportBlob("png", "original", 100, false);
+    const blob = await renderExportBlob('png', 'original', 100, false);
     if (!blob) return;
 
     setCopying(true);
 
     try {
-      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
       showCopyToast();
     } catch (error) {
-      console.error("Copy failed", error);
+      console.error('Copy failed', error);
       showCopyFailedToast();
     }
 
@@ -342,17 +337,14 @@ const BottomBar: React.FC<BottomBarProps> = ({
         >
           {(
             [
-              { value: "edited", label: "B" },
-              { value: "original", label: "A" },
-              { value: "studio", label: "C" },
+              { value: 'edited', label: 'B' },
+              { value: 'original', label: 'A' },
+              { value: 'studio', label: 'C' },
             ] as const
           ).map((entry) => {
             const active = viewMode === entry.value;
-            const fullLabel = entry.value === "edited"
-              ? "B · Adaptive"
-              : entry.value === "original"
-                ? "A · Original"
-                : "C · Studio";
+            const fullLabel =
+              entry.value === 'edited' ? 'B · Adaptive' : entry.value === 'original' ? 'A · Original' : 'C · Studio';
             return (
               <button
                 key={entry.value}
@@ -362,9 +354,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
                 title={fullLabel}
                 onClick={() => onViewModeChange(entry.value)}
                 className={`flex h-6 w-7 items-center justify-center rounded-full transition-colors ${
-                  active
-                    ? "bg-primary/15 text-primary"
-                    : "text-muted-foreground hover:text-foreground"
+                  active ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'
                 }`}
               >
                 {entry.label}
@@ -374,17 +364,13 @@ const BottomBar: React.FC<BottomBarProps> = ({
         </div>
 
         <span className="font-mono-ui text-[10px] text-muted-foreground uppercase tracking-[0.14em]">
-          {viewMode === "edited"
-            ? "B · Adaptive"
-            : viewMode === "original"
-              ? "A · Original"
-              : "C · Studio"}
+          {viewMode === 'edited' ? 'B · Adaptive' : viewMode === 'original' ? 'A · Original' : 'C · Studio'}
         </span>
 
         <button
           onClick={() => onCompareModeChange(!compareMode)}
           className={`flex items-center gap-1.5 font-mono-ui text-[11px] transition-colors ${
-            compareMode ? "text-primary" : "text-muted-foreground hover:text-foreground"
+            compareMode ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
           }`}
         >
           <SplitSquareVertical className="w-3.5 h-3.5" />
@@ -395,19 +381,19 @@ const BottomBar: React.FC<BottomBarProps> = ({
           onClick={onPlayReveal}
           disabled={!fullImageData}
           className={`flex items-center gap-1.5 font-mono-ui text-[11px] transition-colors ${
-            compareReveal === "playing"
-              ? "text-primary"
-              : "text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
+            compareReveal === 'playing'
+              ? 'text-primary'
+              : 'text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground'
           }`}
           title="Play an animated before/after reveal (Shift+C)"
         >
           <Play className="w-3.5 h-3.5" />
-          {compareReveal === "playing" ? "Revealing…" : "Reveal"}
+          {compareReveal === 'playing' ? 'Revealing…' : 'Reveal'}
         </button>
 
         {compareMode ? (
           <span className="font-mono-ui text-[10px] text-muted-foreground uppercase tracking-[0.14em]">
-            {compareReveal === "playing" ? "Auto-cycling" : "Drag slider on image"}
+            {compareReveal === 'playing' ? 'Auto-cycling' : 'Drag slider on image'}
           </span>
         ) : null}
       </div>
@@ -457,7 +443,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
             value={quality}
             onChange={(event) => setQuality(Number(event.target.value))}
             className="rounded-md border border-border bg-background px-2 py-1 font-mono-ui text-[11px] text-foreground"
-            disabled={resolveExportMime(format, sourceMimeType) === "image/png"}
+            disabled={resolveExportMime(format, sourceMimeType) === 'image/png'}
           >
             <option value={70}>Q70</option>
             <option value={85}>Q85</option>
@@ -481,7 +467,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
           disabled={copying || exporting}
         >
           <Copy className="w-3 h-3" />
-          {copying ? "Copied" : "Copy"}
+          {copying ? 'Copied' : 'Copy'}
         </button>
 
         <button
@@ -490,7 +476,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
           disabled={exporting}
         >
           <Download className="w-3 h-3" />
-          {exporting ? "Exporting" : `Export ${format === "png" ? "PNG" : "JPG"}`}
+          {exporting ? 'Exporting' : `Export ${format === 'png' ? 'PNG' : 'JPG'}`}
         </button>
       </div>
     </div>

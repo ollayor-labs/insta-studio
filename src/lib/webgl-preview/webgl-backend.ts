@@ -18,13 +18,12 @@
  * falls back to JS. This means the WebGL path is *opt-in* and the
  * JS path is *always* available.
  */
-import type { PreviewAbortSignal, PreviewBackend, RenderRequest } from "./types";
-import { PER_PIXEL_FRAGMENT_SHADER, PER_PIXEL_VERTEX_SHADER } from "./shaders";
-import { settingsRequireBlurPasses } from "./selection";
-import type { HslBandAdjustment, ResolvedFilterSettings } from "@/lib/filterEngine";
-import { setWebGlDegraded } from "./selection";
+import type { PreviewAbortSignal, PreviewBackend, RenderRequest } from './types';
+import { PER_PIXEL_FRAGMENT_SHADER, PER_PIXEL_VERTEX_SHADER } from './shaders';
+import type { ResolvedFilterSettings } from '@/lib/filterEngine';
+import { setWebGlDegraded } from './selection';
 
-export type WebGlBackendState = "ready" | "degraded" | "disposed";
+export type WebGlBackendState = 'ready' | 'degraded' | 'disposed';
 
 export interface WebGlBackendOptions {
   /**
@@ -65,7 +64,7 @@ interface ProgramHandles {
 }
 
 export class WebGlBackend implements PreviewBackend {
-  readonly kind = "webgl" as const;
+  readonly kind = 'webgl' as const;
 
   private gl: WebGL2RenderingContext | null = null;
   private program: ProgramHandles | null = null;
@@ -74,7 +73,7 @@ export class WebGlBackend implements PreviewBackend {
   private vao: WebGLVertexArrayObject | null = null;
   private fbWidth = 0;
   private fbHeight = 0;
-  private state: WebGlBackendState = "ready";
+  private state: WebGlBackendState = 'ready';
   private acquireContext: () => WebGL2RenderingContext | null;
   private maxHslBands: number;
 
@@ -90,8 +89,8 @@ export class WebGlBackend implements PreviewBackend {
    * compilation failed.
    */
   private ensureInitialized(width: number, height: number): boolean {
-    if (this.state === "degraded") return false;
-    if (this.state === "disposed") return false;
+    if (this.state === 'degraded') return false;
+    if (this.state === 'disposed') return false;
     if (this.program && this.fbWidth === width && this.fbHeight === height) return true;
 
     const gl = this.acquireContext();
@@ -101,7 +100,7 @@ export class WebGlBackend implements PreviewBackend {
       // surface a Promise rejection and the user will see a
       // broken slider, which is exactly the failure mode we
       // wanted to avoid.
-      this.state = "degraded";
+      this.state = 'degraded';
       return false;
     }
     this.gl = gl;
@@ -110,16 +109,16 @@ export class WebGlBackend implements PreviewBackend {
     // required on the lost event to signal the browser that we
     // want a `webglcontextrestored` event later. Without it, the
     // context is gone for good.
-    gl.canvas.addEventListener("webglcontextlost", (event) => {
+    gl.canvas.addEventListener('webglcontextlost', (event) => {
       event.preventDefault();
       this.onContextLost();
     });
-    gl.canvas.addEventListener("webglcontextrestored", () => {
+    gl.canvas.addEventListener('webglcontextrestored', () => {
       this.onContextRestored();
     });
 
     if (!this.compileProgram()) {
-      this.state = "degraded";
+      this.state = 'degraded';
       return false;
     }
     this.allocateTextures(width, height);
@@ -129,7 +128,7 @@ export class WebGlBackend implements PreviewBackend {
   }
 
   isDegraded(): boolean {
-    return this.state === "degraded";
+    return this.state === 'degraded';
   }
 
   getState(): WebGlBackendState {
@@ -150,19 +149,19 @@ export class WebGlBackend implements PreviewBackend {
         resolve(request.source);
         return;
       }
-      if (this.state === "degraded") {
-        reject(new Error("WebGL context lost; caller should fall back to JS backend"));
+      if (this.state === 'degraded') {
+        reject(new Error('WebGL context lost; caller should fall back to JS backend'));
         return;
       }
-      if (this.state === "disposed") {
-        reject(new Error("WebGL backend disposed"));
+      if (this.state === 'disposed') {
+        reject(new Error('WebGL backend disposed'));
         return;
       }
 
       const { source, settings } = request;
       const ok = this.ensureInitialized(source.width, source.height);
       if (!ok) {
-        reject(new Error("WebGL initialization failed"));
+        reject(new Error('WebGL initialization failed'));
         return;
       }
 
@@ -195,8 +194,8 @@ export class WebGlBackend implements PreviewBackend {
   }
 
   dispose(): void {
-    if (this.state === "disposed") return;
-    this.state = "disposed";
+    if (this.state === 'disposed') return;
+    this.state = 'disposed';
     const gl = this.gl;
     if (gl) {
       if (this.program) gl.deleteProgram(this.program.program);
@@ -217,7 +216,7 @@ export class WebGlBackend implements PreviewBackend {
     setWebGlDegraded(true);
     // Mark degraded so the selector routes future renders to JS.
     // Drop the GL resources; we'll rebuild on restored.
-    this.state = "degraded";
+    this.state = 'degraded';
     if (this.gl) {
       // Free as much GPU memory as possible while we wait for restore.
       if (this.program) this.gl.deleteProgram(this.program.program);
@@ -236,8 +235,8 @@ export class WebGlBackend implements PreviewBackend {
     // Re-arm the backend. The next render call will reinitialize
     // the GL resources; we don't force it here so the broker
     // doesn't see a half-restored backend.
-    if (this.state === "disposed") return;
-    this.state = "ready";
+    if (this.state === 'disposed') return;
+    this.state = 'ready';
     this.fbWidth = 0;
     this.fbHeight = 0;
   }
@@ -257,7 +256,7 @@ export class WebGlBackend implements PreviewBackend {
     gl.linkProgram(program);
     if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
       const log = gl.getProgramInfoLog(program);
-      console.error("[webgl-preview] program link failed:", log);
+      console.error('[webgl-preview] program link failed:', log);
       return null;
     }
     gl.deleteShader(vs);
@@ -265,48 +264,34 @@ export class WebGlBackend implements PreviewBackend {
 
     return {
       program,
-      attribPosition: gl.getAttribLocation(program, "a_position"),
-      attribTexCoord: gl.getAttribLocation(program, "a_texCoord"),
-      uniformSource: gl.getUniformLocation(program, "u_source"),
-      uniformSourceSize: gl.getUniformLocation(program, "u_sourceSize"),
-      uniformTime: gl.getUniformLocation(program, "u_time"),
-      uniformAdjust0: gl.getUniformLocation(program, "u_adjust0"),
-      uniformAdjust1: gl.getUniformLocation(program, "u_adjust1"),
-      uniformAdjust2: gl.getUniformLocation(program, "u_adjust2"),
-      uniformGrain: gl.getUniformLocation(program, "u_grain"),
-      uniformHslBandMinMaxSoft: gl.getUniformLocation(program, "u_hslBandMinMaxSoft[0]"),
-      uniformHslBandShiftSatLight: gl.getUniformLocation(program, "u_hslBandShiftSatLight[0]"),
-      uniformHslBandCount: gl.getUniformLocation(program, "u_hslBandCount"),
-      uniformSkinProtection: gl.getUniformLocation(program, "u_skinProtection"),
-      uniformCurveLut: gl.getUniformLocation(program, "u_curveLut"),
-      uniformSplitShadow: gl.getUniformLocation(program, "u_splitShadow"),
-      uniformSplitHighlight: gl.getUniformLocation(program, "u_splitHighlight"),
-      uniformSplitBalance: gl.getUniformLocation(program, "u_splitBalance"),
-      uniformEffectIntensity: gl.getUniformLocation(program, "u_effectIntensity"),
+      attribPosition: gl.getAttribLocation(program, 'a_position'),
+      attribTexCoord: gl.getAttribLocation(program, 'a_texCoord'),
+      uniformSource: gl.getUniformLocation(program, 'u_source'),
+      uniformSourceSize: gl.getUniformLocation(program, 'u_sourceSize'),
+      uniformTime: gl.getUniformLocation(program, 'u_time'),
+      uniformAdjust0: gl.getUniformLocation(program, 'u_adjust0'),
+      uniformAdjust1: gl.getUniformLocation(program, 'u_adjust1'),
+      uniformAdjust2: gl.getUniformLocation(program, 'u_adjust2'),
+      uniformGrain: gl.getUniformLocation(program, 'u_grain'),
+      uniformHslBandMinMaxSoft: gl.getUniformLocation(program, 'u_hslBandMinMaxSoft[0]'),
+      uniformHslBandShiftSatLight: gl.getUniformLocation(program, 'u_hslBandShiftSatLight[0]'),
+      uniformHslBandCount: gl.getUniformLocation(program, 'u_hslBandCount'),
+      uniformSkinProtection: gl.getUniformLocation(program, 'u_skinProtection'),
+      uniformCurveLut: gl.getUniformLocation(program, 'u_curveLut'),
+      uniformSplitShadow: gl.getUniformLocation(program, 'u_splitShadow'),
+      uniformSplitHighlight: gl.getUniformLocation(program, 'u_splitHighlight'),
+      uniformSplitBalance: gl.getUniformLocation(program, 'u_splitBalance'),
+      uniformEffectIntensity: gl.getUniformLocation(program, 'u_effectIntensity'),
     };
   }
 
-  private allocateTextures(width: number, height: number): void {
+  private allocateTextures(_width: number, _height: number): void {
     const gl = this.gl;
     if (!gl || !this.program) return;
 
     // Fullscreen quad: 2 triangles covering [-1, 1] in clip space.
-    const positions = new Float32Array([
-      -1, -1,
-      1, -1,
-      -1, 1,
-      -1, 1,
-      1, -1,
-      1, 1,
-    ]);
-    const texCoords = new Float32Array([
-      0, 1,
-      1, 1,
-      0, 0,
-      0, 0,
-      1, 1,
-      1, 0,
-    ]);
+    const positions = new Float32Array([-1, -1, 1, -1, -1, 1, -1, 1, 1, -1, 1, 1]);
+    const texCoords = new Float32Array([0, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 0]);
     this.vao = gl.createVertexArray();
     gl.bindVertexArray(this.vao);
 
@@ -339,17 +324,7 @@ export class WebGlBackend implements PreviewBackend {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.R8,
-      256,
-      1,
-      0,
-      gl.RED,
-      gl.UNSIGNED_BYTE,
-      identityLut(),
-    );
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, 256, 1, 0, gl.RED, gl.UNSIGNED_BYTE, identityLut());
   }
 
   private uploadSource(source: ImageData): void {
@@ -357,17 +332,7 @@ export class WebGlBackend implements PreviewBackend {
     if (!gl || !this.sourceTexture) return;
     gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA,
-      source.width,
-      source.height,
-      0,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      source.data,
-    );
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, source.width, source.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, source.data);
   }
 
   private applyUniforms(settings: ResolvedFilterSettings): void {
@@ -377,24 +342,15 @@ export class WebGlBackend implements PreviewBackend {
 
     const a = settings.adjustments;
     // Slider range is 0..100 (or -100..100). Normalize to 0..1 / -1..+1.
-    gl.uniform4f(this.program.uniformAdjust0,
+    gl.uniform4f(
+      this.program.uniformAdjust0,
       a.brightness / 100,
       a.contrast / 100,
       a.highlights / 100,
       a.shadows / 100,
     );
-    gl.uniform4f(this.program.uniformAdjust1,
-      a.whites / 100,
-      a.blacks / 100,
-      a.temperature / 100,
-      a.tint / 100,
-    );
-    gl.uniform4f(this.program.uniformAdjust2,
-      a.saturation / 100,
-      a.vibrance / 100,
-      a.fade / 100,
-      a.vignette / 100,
-    );
+    gl.uniform4f(this.program.uniformAdjust1, a.whites / 100, a.blacks / 100, a.temperature / 100, a.tint / 100);
+    gl.uniform4f(this.program.uniformAdjust2, a.saturation / 100, a.vibrance / 100, a.fade / 100, a.vignette / 100);
     gl.uniform1f(this.program.uniformGrain, a.grain / 100);
     gl.uniform1f(this.program.uniformTime, performance.now() / 1000);
 
@@ -417,8 +373,8 @@ export class WebGlBackend implements PreviewBackend {
     gl.uniform4fv(this.program.uniformHslBandShiftSatLight, shiftSatLight);
     gl.uniform1i(this.program.uniformHslBandCount, bands.length);
 
-    const skinProtection = (settings.analysis?.portraitLikelihood ?? 0)
-      * (settings.preset.adaptive?.portraitProtection ?? 0.72);
+    const skinProtection =
+      (settings.analysis?.portraitLikelihood ?? 0) * (settings.preset.adaptive?.portraitProtection ?? 0.72);
     gl.uniform1f(this.program.uniformSkinProtection, skinProtection);
 
     // Master curve LUT -- build a 256-entry identity LUT for now;
@@ -430,17 +386,7 @@ export class WebGlBackend implements PreviewBackend {
     gl.bindTexture(gl.TEXTURE_2D, this.curveLutTexture);
     gl.uniform1i(this.program.uniformCurveLut, 1);
     if (settings.curveLuts.master) {
-      gl.texSubImage2D(
-        gl.TEXTURE_2D,
-        0,
-        0,
-        0,
-        256,
-        1,
-        gl.RED,
-        gl.UNSIGNED_BYTE,
-        settings.curveLuts.master,
-      );
+      gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RED, gl.UNSIGNED_BYTE, settings.curveLuts.master);
     }
 
     // Split tone
@@ -454,7 +400,8 @@ export class WebGlBackend implements PreviewBackend {
       const highlightB = parseInt(st.highlights.slice(5, 7), 16) / 255;
       gl.uniform4f(this.program.uniformSplitShadow, shadowR - 0.5, shadowG - 0.5, shadowB - 0.5, 0);
       gl.uniform4f(this.program.uniformSplitHighlight, highlightR - 0.5, highlightG - 0.5, highlightB - 0.5, 0);
-      gl.uniform2f(this.program.uniformSplitBalance,
+      gl.uniform2f(
+        this.program.uniformSplitBalance,
         (st.balance + 100) / 200, // map -100..100 to 0..1
         st.intensity / 100,
       );
@@ -483,17 +430,9 @@ export class WebGlBackend implements PreviewBackend {
 
   private readPixels(): Uint8ClampedArray {
     const gl = this.gl;
-    if (!gl) throw new Error("WebGL context unavailable");
+    if (!gl) throw new Error('WebGL context unavailable');
     const pixels = new Uint8ClampedArray(this.fbWidth * this.fbHeight * 4);
-    gl.readPixels(
-      0,
-      0,
-      this.fbWidth,
-      this.fbHeight,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      pixels,
-    );
+    gl.readPixels(0, 0, this.fbWidth, this.fbHeight, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
     // WebGL's readPixels is bottom-up; flip vertically so the
     // returned buffer matches the source's top-down layout.
     flipVerticallyInPlace(pixels, this.fbWidth, this.fbHeight);
@@ -501,18 +440,14 @@ export class WebGlBackend implements PreviewBackend {
   }
 }
 
-function compileShader(
-  gl: WebGL2RenderingContext,
-  type: GLenum,
-  source: string,
-): WebGLShader | null {
+function compileShader(gl: WebGL2RenderingContext, type: GLenum, source: string): WebGLShader | null {
   const shader = gl.createShader(type);
   if (!shader) return null;
   gl.shaderSource(shader, source);
   gl.compileShader(shader);
   if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
     const log = gl.getShaderInfoLog(shader);
-    console.error("[webgl-preview] shader compile failed:", log, source);
+    console.error('[webgl-preview] shader compile failed:', log, source);
     gl.deleteShader(shader);
     return null;
   }
@@ -549,15 +484,15 @@ function defaultAcquireContext(): WebGL2RenderingContext | null {
   const orig = console.error;
   try {
     console.error = () => {};
-    if (typeof OffscreenCanvas !== "undefined") {
+    if (typeof OffscreenCanvas !== 'undefined') {
       const canvas = new OffscreenCanvas(1, 1);
-      return canvas.getContext("webgl2") as WebGL2RenderingContext | null;
+      return canvas.getContext('webgl2') as WebGL2RenderingContext | null;
     }
-    if (typeof document !== "undefined") {
-      const canvas = document.createElement("canvas");
+    if (typeof document !== 'undefined') {
+      const canvas = document.createElement('canvas');
       canvas.width = 1;
       canvas.height = 1;
-      return canvas.getContext("webgl2") as WebGL2RenderingContext | null;
+      return canvas.getContext('webgl2') as WebGL2RenderingContext | null;
     }
     return null;
   } finally {

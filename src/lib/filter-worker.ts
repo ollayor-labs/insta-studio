@@ -1,5 +1,5 @@
-import type { ResolvedFilterSettings } from "@/lib/filterEngine";
-import type { PreviewAbortSignal, PreviewBackend, PreviewBackendKind, RenderRequest } from "@/lib/webgl-preview";
+import type { ResolvedFilterSettings } from '@/lib/filterEngine';
+import type { PreviewAbortSignal, PreviewBackend, PreviewBackendKind, RenderRequest } from '@/lib/webgl-preview';
 import {
   JsBackend,
   WebGlBackend,
@@ -7,7 +7,7 @@ import {
   isWebGlDegraded,
   setPreviewBackendPolicy as setPreviewBackendPolicyImpl,
   getPreviewBackendPolicy,
-} from "@/lib/webgl-preview";
+} from '@/lib/webgl-preview';
 
 // Message types --------------------------------------------------------------
 //
@@ -20,7 +20,7 @@ import {
 // possible without changing any caller.
 
 export interface FilterWorkerRequest {
-  kind: "render";
+  kind: 'render';
   id: number;
   width: number;
   height: number;
@@ -29,14 +29,14 @@ export interface FilterWorkerRequest {
 }
 
 export interface FilterWorkerAbort {
-  kind: "abort";
+  kind: 'abort';
   id: number;
 }
 
 export type BrokerToWorker = FilterWorkerRequest | FilterWorkerAbort;
 
 export interface FilterWorkerResult {
-  kind: "result";
+  kind: 'result';
   id: number;
   width: number;
   height: number;
@@ -44,7 +44,7 @@ export interface FilterWorkerResult {
 }
 
 export interface FilterWorkerAborted {
-  kind: "aborted";
+  kind: 'aborted';
   id: number;
 }
 
@@ -53,7 +53,7 @@ export type WorkerToBroker = FilterWorkerResult | FilterWorkerAborted;
 // Worker factory -------------------------------------------------------------
 
 export function createFilterWorker(): Worker {
-  return new Worker(new URL("../workers/filterWorker.ts", import.meta.url), { type: "module" });
+  return new Worker(new URL('../workers/filterWorker.ts', import.meta.url), { type: 'module' });
 }
 
 // Re-export the RenderJob type for backends that need it.
@@ -94,7 +94,7 @@ interface Broker {
 }
 
 function defaultMaxWorkers(): number {
-  if (typeof navigator === "undefined") return 2;
+  if (typeof navigator === 'undefined') return 2;
   const cores = navigator.hardwareConcurrency ?? 4;
   return Math.max(1, Math.min(4, cores - 1));
 }
@@ -105,14 +105,14 @@ const broker: Broker = {
   maxWorkers: 0,
 };
 
-function createJsBackendForConsumer(consumer: string): PreviewBackend {
+function createJsBackendForConsumer(_consumer: string): PreviewBackend {
   return new JsBackend({
     createFilterWorker,
     brokerWorkerType: undefined as never, // unused in the current backend impl
   });
 }
 
-function createWebGlBackendForConsumer(consumer: string): PreviewBackend | null {
+function createWebGlBackendForConsumer(_consumer: string): PreviewBackend | null {
   if (!isWebGlPreviewSupported()) return null;
   return new WebGlBackend();
 }
@@ -162,7 +162,7 @@ function getOrCreateConsumerEntry(consumer: string, settings: ResolvedFilterSett
   const wantedKind = policy.select(consumer, settings);
   let backend: PreviewBackend | null = null;
   let preferWebGl = false;
-  if (wantedKind === "webgl") {
+  if (wantedKind === 'webgl') {
     backend = policy.createWebGlBackend ? policy.createWebGlBackend(consumer) : createWebGlBackendForConsumer(consumer);
     preferWebGl = true;
   }
@@ -183,7 +183,7 @@ function getOrCreateConsumerEntry(consumer: string, settings: ResolvedFilterSett
  * so the next render lands on a fresh JS backend.
  */
 function shouldEvictEntry(entry: PoolEntry, _settings: ResolvedFilterSettings): boolean {
-  if (entry.preferWebGl && entry.backend.kind === "webgl") {
+  if (entry.preferWebGl && entry.backend.kind === 'webgl') {
     // The WebGlBackend exposes isDegraded() to report a context
     // loss (per-instance flag flipped in onContextLost). The
     // module-level webglDegraded flag is the process-wide signal
@@ -193,7 +193,7 @@ function shouldEvictEntry(entry: PoolEntry, _settings: ResolvedFilterSettings): 
     // webglcontextlost.
     if (isWebGlDegraded()) return true;
     const backend = entry.backend as WebGlBackend & { isDegraded?: () => boolean };
-    if (typeof backend.isDegraded === "function" && backend.isDegraded()) {
+    if (typeof backend.isDegraded === 'function' && backend.isDegraded()) {
       return true;
     }
   }
@@ -230,7 +230,7 @@ export function renderFilterOnWorker(
   settings: ResolvedFilterSettings,
   options: RenderFilterOptions = {},
 ): Promise<ImageData> {
-  const consumer = options.consumer ?? "default";
+  const consumer = options.consumer ?? 'default';
   return new Promise<ImageData>((resolve, reject) => {
     const job: RenderJob = {
       id: broker.nextId,
@@ -253,7 +253,11 @@ export function renderFilterOnWorker(
     }
     entry.inFlight = job;
 
-    const signal: PreviewAbortSignal = { get aborted() { return job.cancelled; } };
+    const signal: PreviewAbortSignal = {
+      get aborted() {
+        return job.cancelled;
+      },
+    };
     const request: RenderRequest = { source: sourceData, settings };
 
     entry.backend.render(request, signal).then(
@@ -305,9 +309,7 @@ export function cancelPendingFilterRenders(consumer?: string): void {
  * policy; in-flight renders keep the backend that was selected
  * when they started.
  */
-export function setPreviewBackendPolicy(
-  policy: import("@/lib/webgl-preview").PreviewBackendPolicy,
-): void {
+export function setPreviewBackendPolicy(policy: import('@/lib/webgl-preview').PreviewBackendPolicy): void {
   setPreviewBackendPolicyImpl(policy);
 }
 
