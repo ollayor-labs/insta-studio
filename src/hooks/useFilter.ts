@@ -8,7 +8,14 @@ import {
 import type { ImageAnalysis } from "@/lib/filterEngine";
 import { createFilterWorker, type FilterWorkerRequest, type FilterWorkerResponse } from "@/lib/filter-worker";
 
-const PREVIEW_MAX_DIMENSION = 1600;
+// Preview is downsampled to match the canvas's display element size
+// (see ImageCanvas maxWidth=1200, maxHeight=800). The previous 1600 cap
+// meant the worker processed ~78% more pixels than the user could ever
+// see at 100% zoom, and every render's postMessage buffer was ~6.5 MB
+// larger than necessary. The 1200 cap keeps pixel-perfect alignment
+// with the display and roughly halves the per-render work for the
+// slider feel path.
+const PREVIEW_MAX_DIMENSION = 1200;
 
 function useDebouncedValue<T>(value: T, delay = 16): T {
   const [debounced, setDebounced] = useState(value);

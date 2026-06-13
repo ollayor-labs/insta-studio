@@ -13,11 +13,21 @@ import { showFilterChangedToast } from "@/lib/editorToasts";
 import { useFilter } from "@/hooks/useFilter";
 import DropZone from "@/components/DropZone";
 import FilterSidebar from "@/components/FilterSidebar";
-import AdjustmentsPanel from "@/components/AdjustmentsPanel";
-import ImageCanvas from "@/components/ImageCanvas";
+import RawAdjustmentsPanel from "@/components/AdjustmentsPanel";
+import RawImageCanvas from "@/components/ImageCanvas";
 import BottomBar from "@/components/BottomBar";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
 
+// Memoize the heavy child boundaries so the editor shell's frequent
+// commits (debounced adjustments, recents / drop keystrokes, export
+// signals, compare-reveal animations) don't re-run ImageCanvas's RAF
+// scheduler and clipping pass or rebuild AdjustmentsPanel's slider
+// tree when the props they care about are unchanged. `setZoom` and
+// `handleUserComparePositionChange` are already stable references, so
+// the memo hits in practice for any commit where the parent state
+// changes but these props don't.
+const ImageCanvas = React.memo(RawImageCanvas);
+const AdjustmentsPanel = React.memo(RawAdjustmentsPanel);
 const brandMarkSrc = "/brand/logo-mark.png";
 
 function isTypingTarget(target: EventTarget | null): boolean {
