@@ -266,6 +266,7 @@ describe("filter worker broker (per-consumer worker pools)", () => {
 
     backends[0].respondAt(0);
     backends[1].respondAt(0);
+    await flushPromises();
     await Promise.all([aPromise, bPromise]);
     cancelPendingFilterRenders();
   });
