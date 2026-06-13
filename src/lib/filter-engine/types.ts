@@ -129,7 +129,22 @@ export interface FilterPresetDefinition {
   sceneAffinity?: Partial<Record<ImageSceneTag, number>>;
 }
 
-export interface ImageAnalysis {
+export interface Histogram {
+  luminance: Uint16Array;
+}
+
+export interface ChannelHistogram {
+  r: Uint16Array;
+  g: Uint16Array;
+  b: Uint16Array;
+}
+
+export interface ClippingChannels {
+  highlight: { r: boolean; g: boolean; b: boolean };
+  shadow: { r: boolean; g: boolean; b: boolean };
+}
+
+export interface ImageAnalysisFields {
   width: number;
   height: number;
   pixelCount: number;
@@ -140,6 +155,9 @@ export interface ImageAnalysis {
   warmth: number;
   highlightClipping: number;
   shadowClipping: number;
+  histogram: Histogram;
+  channelHistogram: ChannelHistogram;
+  clippingChannels: ClippingChannels;
   portraitLikelihood: number;
   indoorLikelihood: number;
   outdoorLikelihood: number;
@@ -152,12 +170,24 @@ export interface ImageAnalysis {
   sceneTags: ImageSceneTag[];
 }
 
+export type ImageAnalysis = ImageAnalysisFields;
+
+export type RenderPrecision = "uint8" | "float32";
+
 export interface RenderOptions {
   strength?: number;
   effectIntensity?: number;
   quality?: RenderQuality;
   analysis?: ImageAnalysis | null;
   adaptToScene?: boolean;
+  /**
+   * Internal computation precision. `uint8` is the fast preview path (8-bit
+   * per channel, clamped between passes). `float32` runs the full chain in
+   * 0..1 floats and clamps once at the end, eliminating the per-pass
+   * rounding that produces banding in smooth gradients. Default `uint8` for
+   * preview, opt-in `float32` for export.
+   */
+  precision?: RenderPrecision;
 }
 
 export interface CurveLuts {
@@ -172,6 +202,7 @@ export interface ResolvedFilterSettings {
   strength: number;
   effectIntensity: number;
   quality: RenderQuality;
+  precision: RenderPrecision;
   analysis: ImageAnalysis | null;
   adjustments: Adjustments;
   curveLuts: CurveLuts;

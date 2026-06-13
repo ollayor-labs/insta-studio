@@ -96,17 +96,7 @@ describe("image import", () => {
 
   it("converts HEIC files before loading them", async () => {
     const file = new File(["heic"], "sample.HEIC", { type: "" });
-    await loadImportedImage(file);
-
-    expect(heicToMock).not.toHaveBeenCalled();
-    expect(createObjectUrlMock).toHaveBeenCalledWith(file);
-    expect(revokeObjectUrlMock).toHaveBeenCalledWith("blob:mock-url");
-  });
-
-  it("falls back to conversion when native HEIC decode fails", async () => {
-    const file = new File(["heic"], "sample.HEIC", { type: "" });
     const convertedBlob = new Blob(["jpeg"], { type: "image/jpeg" });
-    imageLoadOutcomes = [true, false];
     heicToMock.mockResolvedValue(convertedBlob);
 
     await loadImportedImage(file);
@@ -116,9 +106,33 @@ describe("image import", () => {
       type: "image/jpeg",
       quality: 0.92,
     });
-    expect(createObjectUrlMock).toHaveBeenNthCalledWith(1, file);
     expect(createObjectUrlMock).toHaveBeenCalledWith(convertedBlob);
+    expect(createObjectUrlMock).not.toHaveBeenCalledWith(file);
+    expect(revokeObjectUrlMock).toHaveBeenCalledWith("blob:mock-url");
   });
+
+  it("falls back to native decode if HEIC conversion fails", async () => {
+    const file = new File(["heic"], "sample.HEIC", { type: "" });
+    heicToMock.mockRejectedValue(new Error("boom"));
+
+    await loadImportedImage(file);
+
+    expect(heicToMock).toHaveBeenCalled();
+    expect(createObjectUrlMock).toHaveBeenCalledWith(file);
+  });
+
+  it("surfaces a heic-conversion-failed error when both conversion and native decode fail", async () => {
+    const file = new File(["heic"], "sample.HEIC", { type: "" });
+    heicToMock.mockRejectedValue(new Error("boom"));
+    imageLoadOutcomes = [true];
+
+    await expect(loadImportedImage(file)).rejects.toMatchObject<ImageImportError>({
+      code: "heic-conversion-failed",
+      message: "The HEIC image could not be converted.",
+    });
+  });
+
+
 
   it("normalizes converted blobs that do not report a MIME type", () => {
     const convertedBlob = new Blob(["jpeg"]);

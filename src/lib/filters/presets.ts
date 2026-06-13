@@ -518,10 +518,68 @@ export const FILTER_PRESETS: FilterPresetDefinition[] = [
 export const presetByName = new Map(FILTER_PRESETS.map((preset) => [preset.name, preset]));
 export const presetById = new Map(FILTER_PRESETS.map((preset) => [preset.id, preset]));
 
+function customRecordToDefinition(
+  record: { id: string; name: string; basePresetId: string; strength: number; adjustments: FilterPresetDefinition["adjustments"] },
+): FilterPresetDefinition {
+  const base = presetById.get(record.basePresetId) ?? FILTER_PRESETS[0];
+  return {
+    ...base,
+    id: record.id,
+    name: record.name,
+    category: "Custom",
+    mood: "Personal preset",
+    description: "Saved from your adjustments.",
+    whyItWorks: "Custom preset based on " + base.name + ".",
+    defaultStrength: record.strength,
+    adjustments: { ...base.adjustments, ...record.adjustments },
+    tags: [...(base.tags ?? []), "custom"],
+    sceneAffinity: {},
+    adaptive: base.adaptive,
+  };
+}
+
+export function customPresetsToDefinitions(
+  records: Array<{ id: string; name: string; basePresetId: string; strength: number; adjustments: FilterPresetDefinition["adjustments"] }>,
+): FilterPresetDefinition[] {
+  return records.map(customRecordToDefinition);
+}
+
 export function getFilterPreset(filterName: string): FilterPresetDefinition {
   return presetByName.get(filterName) ?? FILTER_PRESETS[0];
 }
 
 export function getFilterPresetById(presetId: string): FilterPresetDefinition {
   return presetById.get(presetId) ?? FILTER_PRESETS[0];
+}
+
+type CustomRecordInput = {
+  id: string;
+  name: string;
+  basePresetId: string;
+  strength: number;
+  adjustments: FilterPresetDefinition["adjustments"];
+};
+
+export function getFilterPresetByIdWithCustom(
+  presetId: string,
+  customRecords: CustomRecordInput[],
+): FilterPresetDefinition {
+  const custom = customRecords.find((record) => record.id === presetId);
+  if (custom) return customRecordToDefinition(custom);
+  return getFilterPresetById(presetId);
+}
+
+export function getFilterPresetByNameWithCustom(
+  filterName: string,
+  customRecords: CustomRecordInput[],
+): FilterPresetDefinition {
+  const custom = customRecords.find((record) => record.name === filterName);
+  if (custom) return customRecordToDefinition(custom);
+  return getFilterPreset(filterName);
+}
+
+export function allPresetsWithCustom(
+  customRecords: CustomRecordInput[],
+): FilterPresetDefinition[] {
+  return [...FILTER_PRESETS, ...customPresetsToDefinitions(customRecords)];
 }

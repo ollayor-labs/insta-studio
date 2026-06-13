@@ -1,4 +1,4 @@
-import type { ImageAnalysis, ImageSceneTag } from "./types";
+import type { ClippingChannels, ImageAnalysis, ImageSceneTag } from "./types";
 import { clamp01, luminance, rgbToHsl } from "./utils";
 
 function isSkinTone(r: number, g: number, b: number, hue: number, saturation: number, lightness: number): boolean {
@@ -24,6 +24,10 @@ export function analyzeImageData(sourceData: ImageData): ImageAnalysis {
   const pixelCount = width * height;
   const sampleStride = Math.max(1, Math.floor(Math.sqrt(pixelCount / 64000)));
 
+  const histogram = new Uint16Array(256);
+  const channelR = new Uint16Array(256);
+  const channelG = new Uint16Array(256);
+  const channelB = new Uint16Array(256);
   let samples = 0;
   let luminanceSum = 0;
   let luminanceSquaredSum = 0;
@@ -56,6 +60,12 @@ export function analyzeImageData(sourceData: ImageData): ImageAnalysis {
 
       if ((b > r * 1.03 || g > r * 1.03) && saturation > 0.18) blueGreenCount += 1;
       if (r > b * 1.12 && lum < 0.62) warmIndoorCount += 1;
+
+      const lumBin = Math.min(255, Math.max(0, lum * 255)) | 0;
+      histogram[lumBin] += 1;
+      channelR[r] += 1;
+      channelG[g] += 1;
+      channelB[b] += 1;
     }
   }
 
@@ -92,6 +102,13 @@ export function analyzeImageData(sourceData: ImageData): ImageAnalysis {
   if (outdoorLikelihood > 0.45 && dynamicRange > 0.3) sceneTags.push("street");
   if (averageSaturation > 0.35 && warmth > 0.04) sceneTags.push("food");
 
+  const channelThreshold = samples * 0.005;
+  const highlightR = channelR[255] > channelThreshold;
+  const highlightG = channelG[255] > channelThreshold;
+  const highlightB = channelB[255] > channelThreshold;
+  const shadowR = channelR[0] > channelThreshold;
+  const shadowG = channelG[0] > channelThreshold;
+  const shadowB = channelB[0] > channelThreshold;
   return {
     width,
     height,
@@ -103,6 +120,12 @@ export function analyzeImageData(sourceData: ImageData): ImageAnalysis {
     warmth,
     highlightClipping,
     shadowClipping,
+    histogram: { luminance: histogram },
+    channelHistogram: { r: channelR, g: channelG, b: channelB },
+    clippingChannels: {
+      highlight: { r: highlightR, g: highlightG, b: highlightB },
+      shadow: { r: shadowR, g: shadowG, b: shadowB },
+    },
     portraitLikelihood,
     indoorLikelihood,
     outdoorLikelihood,
@@ -113,5 +136,42 @@ export function analyzeImageData(sourceData: ImageData): ImageAnalysis {
     overexposedLikelihood,
     underexposedLikelihood,
     sceneTags,
+  };
+}
+
+const CLIPPING_THRESHOLD = 250;
+const SHADOW_THRESHOLD = 5;
+
+export function detectClippingFromImageData(sourceData: ImageData, sampleRatio = 1): ClippingChannels {
+  const { width, height, data } = sourceData;
+  const stride = Math.max(1, Math.floor(1 / Math.max(0.05, Math.min(1, sampleRatio))));
+  let highlightR = 0;
+  let highlightG = 0;
+  let highlightB = 0;
+  let shadowR = 0;
+  let shadowG = 0;
+  let shadowB = 0;
+  let samples = 0;
+
+  for (let y = 0; y < height; y += stride) {
+    for (let x = 0; x < width; x += stride) {
+      const index = (y * width + x) * 4;
+      const r = data[index];
+      const g = data[index + 1];
+      const b = data[index + 2];
+      samples += 1;
+      if (r >= CLIPPING_THRESHOLD) highlightR += 1;
+      if (g >= CLIPPING_THRESHOLD) highlightG += 1;
+      if (b >= CLIPPING_THRESHOLD) highlightB += 1;
+      if (r <= SHADOW_THRESHOLD) shadowR += 1;
+      if (g <= SHADOW_THRESHOLD) shadowG += 1;
+      if (b <= SHADOW_THRESHOLD) shadowB += 1;
+    }
+  }
+
+  const threshold = Math.max(1, samples * 0.005);
+  return {
+    highlight: { r: highlightR > threshold, g: highlightG > threshold, b: highlightB > threshold },
+    shadow: { r: shadowR > threshold, g: shadowG > threshold, b: shadowB > threshold },
   };
 }

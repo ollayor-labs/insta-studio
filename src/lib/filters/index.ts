@@ -1,3 +1,4 @@
+import { applyFilterFloat32 } from "../filter-engine/float32";
 import { analyzeImageData } from "../filter-engine/analysis";
 import type {
   Adjustments,
@@ -30,11 +31,7 @@ import {
 } from "../filter-engine/utils";
 import { getFilterPreset } from "./presets";
 
-interface LabColor {
-  l: number;
-  a: number;
-  b: number;
-}
+import { rgbToLab, labToRgb, type LabColor } from "../filter-engine/color-space";
 
 interface SplitToneTargets {
   shadow: LabColor;
@@ -188,65 +185,19 @@ function applyHslAdjustments(
     const influence = bandInfluence(baseHue, band);
     if (influence <= 0.001) continue;
 
-    hue += band.hueShift * influence;
+    // Skin-tone bands still need the skin guard applied: the band is
+    // *targeting* skin tones, so the guard is the only thing that
+    // keeps the band's own sat/light offsets from pushing skin pixels
+    // around. Hue shifts are perceptual and intentionally left alone.
+    const bandGuard = skinGuard;
+    hue += band.hueShift * influence * bandGuard;
     const satDelta = band.saturation / 100;
     const lightDelta = band.lightness / 100;
-    saturation = clamp01(saturation * (1 + satDelta * influence));
-    lightness = clamp01(lightness + lightDelta * influence * 0.6);
+    saturation = clamp01(saturation * (1 + satDelta * influence * bandGuard));
+    lightness = clamp01(lightness + lightDelta * influence * 0.6 * bandGuard);
   }
 
   return hslToRgb(hue, saturation, lightness);
-}
-
-function srgbToLinear(channel: number): number {
-  const value = channel / 255;
-  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-}
-
-function linearToSrgb(channel: number): number {
-  const value = clamp01(channel);
-  const encoded = value <= 0.0031308 ? value * 12.92 : 1.055 * value ** (1 / 2.4) - 0.055;
-  return clamp(Math.round(encoded * 255));
-}
-
-function rgbToLab(r: number, g: number, b: number): LabColor {
-  const lr = srgbToLinear(r);
-  const lg = srgbToLinear(g);
-  const lb = srgbToLinear(b);
-
-  const x = (lr * 0.4124564 + lg * 0.3575761 + lb * 0.1804375) / 0.95047;
-  const y = lr * 0.2126729 + lg * 0.7151522 + lb * 0.072175;
-  const z = (lr * 0.0193339 + lg * 0.119192 + lb * 0.9503041) / 1.08883;
-
-  const fx = x > 0.008856 ? Math.cbrt(x) : 7.787 * x + 16 / 116;
-  const fy = y > 0.008856 ? Math.cbrt(y) : 7.787 * y + 16 / 116;
-  const fz = z > 0.008856 ? Math.cbrt(z) : 7.787 * z + 16 / 116;
-
-  return {
-    l: 116 * fy - 16,
-    a: 500 * (fx - fy),
-    b: 200 * (fy - fz),
-  };
-}
-
-function labToRgb(lab: LabColor): [number, number, number] {
-  const fy = (lab.l + 16) / 116;
-  const fx = lab.a / 500 + fy;
-  const fz = fy - lab.b / 200;
-
-  const x3 = fx ** 3;
-  const y3 = fy ** 3;
-  const z3 = fz ** 3;
-
-  const x = 0.95047 * (x3 > 0.008856 ? x3 : (fx - 16 / 116) / 7.787);
-  const y = y3 > 0.008856 ? y3 : (fy - 16 / 116) / 7.787;
-  const z = 1.08883 * (z3 > 0.008856 ? z3 : (fz - 16 / 116) / 7.787);
-
-  const lr = x * 3.2404542 + y * -1.5371385 + z * -0.4985314;
-  const lg = x * -0.969266 + y * 1.8760108 + z * 0.041556;
-  const lb = x * 0.0556434 + y * -0.2040259 + z * 1.0572252;
-
-  return [linearToSrgb(lr), linearToSrgb(lg), linearToSrgb(lb)];
 }
 
 function getSplitToneTargets(splitTone: SplitToneSettings | undefined): SplitToneTargets | null {
@@ -615,6 +566,7 @@ export function prepareFilterSettings(
     strength,
     effectIntensity,
     quality,
+    precision: options.precision ?? "uint8",
     analysis,
     adjustments: adjusted,
     curve,
@@ -624,22 +576,39 @@ export function prepareFilterSettings(
   };
 }
 
+export interface FilterAbortSignal {
+  readonly aborted: boolean;
+}
+
 export function applyFilter(
   pixelData: Uint8ClampedArray,
   width: number,
   height: number,
   settings: ResolvedFilterSettings,
+  /**
+   * Optional abort signal. The engine checks `signal.aborted` between
+   * top-level passes (base, detail, bloom, final, monochrome, blend) and
+   * short-circuits when set. The pixel buffer is left in an intermediate
+   * state on abort; the caller (typically the filter worker) is
+   * responsible for discarding it and not transferring the result back
+   * to the main thread.
+   */
+  signal?: FilterAbortSignal,
 ): void {
   const original = new Uint8ClampedArray(pixelData);
 
   renderBasePass(original, pixelData, width, height, settings);
+  if (signal?.aborted) return;
   applyDetailPass(pixelData, width, height, settings.adjustments.clarity, settings.adjustments.sharpness, settings.quality);
+  if (signal?.aborted) return;
   applyBloomPass(pixelData, width, height, settings.adjustments.bloom, settings.quality);
+  if (signal?.aborted) return;
   finalPass(pixelData, width, height, settings.adjustments);
 
   if (settings.adjustments.saturation <= -100 && settings.adjustments.vibrance <= -100) {
     enforceMonochrome(pixelData);
   }
+  if (signal?.aborted) return;
 
   blendEffectIntensity(original, pixelData, settings.effectIntensity);
 }
@@ -650,6 +619,16 @@ export function applyFilterToImageData(
   manualAdjustments: Partial<Adjustments> = defaultAdjustments,
   options: RenderOptions = {},
 ): ImageData {
+  if (options.precision === "float32") {
+    const analysis = options.analysis ?? analyzeImageData(sourceData);
+    return applyFilterFloat32(sourceData, filterName, manualAdjustments, {
+      strength: options.strength,
+      effectIntensity: options.effectIntensity,
+      quality: options.quality,
+      analysis,
+      adaptToScene: options.adaptToScene,
+    });
+  }
   const analysis = options.analysis ?? analyzeImageData(sourceData);
   const settings = prepareFilterSettings(filterName, manualAdjustments, options, analysis);
   const output = new Uint8ClampedArray(sourceData.data);
