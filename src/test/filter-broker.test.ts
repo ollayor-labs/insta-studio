@@ -130,7 +130,8 @@ function fakeImageData(): ImageData {
  * broker's render-path Promise chain has fully settled.
  */
 async function flushPromises(): Promise<void> {
-  for (let i = 0; i < 10; i += 1) {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  for (let i = 0; i < 20; i += 1) {
     await Promise.resolve();
   }
 }
@@ -139,10 +140,6 @@ describe("filter worker broker", () => {
   beforeEach(async () => {
     backends.length = 0;
     vi.resetModules();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
   });
 
   it("creates a single backend across multiple renders", async () => {
