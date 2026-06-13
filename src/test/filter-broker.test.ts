@@ -121,6 +121,20 @@ function fakeImageData(): ImageData {
   return new ImageData(new Uint8ClampedArray(16), 2, 2);
 }
 
+/**
+ * Drain the microtask queue. Two `await Promise.resolve()` calls
+ * are usually enough locally but can be slow under load on CI
+ * runners, where the microtask queue is deeper. The loop below
+ * keeps flushing until a full pass through the queue returns
+ * without any new microtasks being scheduled -- which means the
+ * broker's render-path Promise chain has fully settled.
+ */
+async function flushPromises(): Promise<void> {
+  for (let i = 0; i < 10; i += 1) {
+    await Promise.resolve();
+  }
+}
+
 describe("filter worker broker", () => {
   beforeEach(async () => {
     backends.length = 0;
@@ -140,8 +154,7 @@ describe("filter worker broker", () => {
       p1Resolved = true;
     });
     const p2 = renderFilterOnWorker(fakeImageData(), fakeSettings("b"));
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(backends).toHaveLength(1);
     expect(backends[0].calls).toHaveLength(2);
 
@@ -164,8 +177,7 @@ describe("filter worker broker", () => {
     const latest = renderFilterOnWorker(fakeImageData(), fakeSettings("latest")).then(() => {
       latestResolved = true;
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(backends[0].calls).toHaveLength(2);
 
     // First call is dropped (cancelled); only the second is in-flight.
@@ -184,12 +196,10 @@ describe("filter worker broker", () => {
     void renderFilterOnWorker(fakeImageData(), fakeSettings("a")).then(() => {
       resolved = true;
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     cancelPendingFilterRenders();
     backends[0].respondAt(0);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(resolved).toBe(false);
   });
 
@@ -199,8 +209,7 @@ describe("filter worker broker", () => {
 
     const succeeded = vi.fn();
     const p1 = renderFilterOnWorker(fakeImageData(), fakeSettings("bad"));
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(backends[0].calls).toHaveLength(1);
 
     // Simulate backend error.
@@ -211,8 +220,7 @@ describe("filter worker broker", () => {
 
     // After the error, the broker is idle. A new job can be submitted.
     const p2 = renderFilterOnWorker(fakeImageData(), fakeSettings("good")).then(succeeded);
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(backends[0].calls).toHaveLength(2);
     backends[0].respondAt(1);
     await p2;
@@ -228,8 +236,7 @@ describe("filter worker broker", () => {
     void renderFilterOnWorker(fakeImageData(), fakeSettings("a")).then(() => results.push("a"));
     void renderFilterOnWorker(fakeImageData(), fakeSettings("b")).then(() => results.push("b"));
     const p3 = renderFilterOnWorker(fakeImageData(), fakeSettings("c")).then(() => results.push("c"));
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(backends[0].calls).toHaveLength(3);
 
     // a and b were superseded. c is in-flight.
@@ -252,8 +259,7 @@ describe("filter worker broker (per-consumer worker pools)", () => {
 
     const aPromise = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "preview" });
     const bPromise = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "studio" });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(backends).toHaveLength(2);
     expect(backends[0].calls).toHaveLength(1);
     expect(backends[1].calls).toHaveLength(1);
@@ -269,14 +275,12 @@ describe("filter worker broker (per-consumer worker pools)", () => {
     setPreviewBackendPolicy(makePolicy("js"));
 
     const p1 = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "preview" });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     backends[0].respondAt(0);
     await p1;
 
     const p2 = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "preview" });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(backends).toHaveLength(1);
     expect(backends[0].calls).toHaveLength(2);
     backends[0].respondAt(1);
@@ -296,8 +300,7 @@ describe("filter worker broker (per-consumer worker pools)", () => {
     const latest = renderFilterOnWorker(fakeImageData(), fakeSettings("latest"), { consumer: "preview" }).then(() => {
       latestResolved = true;
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(backends).toHaveLength(1);
     expect(backends[0].calls).toHaveLength(2);
 
@@ -314,8 +317,7 @@ describe("filter worker broker (per-consumer worker pools)", () => {
 
     const previewP = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "preview" });
     const studioP = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "studio" });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(backends).toHaveLength(2);
     cancelPendingFilterRenders("preview");
 
@@ -329,8 +331,7 @@ describe("filter worker broker (per-consumer worker pools)", () => {
     void previewP.then(() => {
       previewResolved = true;
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(previewResolved).toBe(false);
   });
 
@@ -342,16 +343,14 @@ describe("filter worker broker (per-consumer worker pools)", () => {
     // Fill the pool with two consumers.
     const aP = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "alpha" });
     const bP = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "beta" });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     const alphaBackend = backends[0];
     const betaBackend = backends[1];
     expect(backends).toHaveLength(2);
 
     // Adding a third consumer evicts the oldest.
     const cP = renderFilterOnWorker(fakeImageData(), fakeSettings("c"), { consumer: "gamma" });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
 
     // The alpha backend was disposed; a fresh backend was created for gamma.
     expect(backends).toHaveLength(3);
@@ -369,8 +368,7 @@ describe("filter worker broker (per-consumer worker pools)", () => {
     void aP.then(() => {
       aResolved = true;
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    await flushPromises();
     expect(aResolved).toBe(false);
     cancelPendingFilterRenders();
   });
