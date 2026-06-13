@@ -90,6 +90,14 @@ describe("filter worker broker", () => {
     vi.resetModules();
   });
 
+  // Pin the pool to a single worker for the single-render cases below
+  // so PR #2's latest-wins behavior stays deterministic. A separate
+  // describe block tests the per-consumer pool behavior.
+  beforeEach(async () => {
+    const { configureFilterWorkerPool } = await import("@/lib/filter-worker");
+    configureFilterWorkerPool(1);
+  });
+
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -215,6 +223,148 @@ describe("filter worker broker", () => {
     respond(workers[0], 3);
     await p3;
     expect(results).toEqual(["c"]);
+    cancelPendingFilterRenders();
+  });
+});
+
+describe("filter worker broker (per-consumer worker pools)", () => {
+  beforeEach(async () => {
+    workers.length = 0;
+    Object.defineProperty(globalThis, "Worker", {
+      writable: true,
+      value: MockWorker,
+    });
+    vi.resetModules();
+  });
+
+  it("allocates a dedicated worker per consumer and runs them in parallel", async () => {
+    const { renderFilterOnWorker, configureFilterWorkerPool, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
+    configureFilterWorkerPool(2);
+
+    const aPromise = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "preview" });
+    const bPromise = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "studio" });
+
+    // Two distinct consumers get two distinct workers.
+    expect(workers).toHaveLength(2);
+    expect(workers[0].posted.filter((m) => m.kind === "render")).toHaveLength(1);
+    expect(workers[1].posted.filter((m) => m.kind === "render")).toHaveLength(1);
+
+    respond(workers[0], 1);
+    respond(workers[1], 2);
+    await Promise.all([aPromise, bPromise]);
+    cancelPendingFilterRenders();
+  });
+
+  it("reuses the same worker for repeated calls with the same consumer", async () => {
+    const { renderFilterOnWorker, configureFilterWorkerPool, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
+    configureFilterWorkerPool(2);
+
+    const p1 = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "preview" });
+    respond(workers[0], 1);
+    await p1;
+
+    const p2 = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "preview" });
+    expect(workers).toHaveLength(1);
+    expect(workers[0].posted.filter((m) => m.kind === "render")).toHaveLength(2);
+    respond(workers[0], 2);
+    await p2;
+    cancelPendingFilterRenders();
+  });
+
+  it("latest-wins within a single consumer still aborts and replaces", async () => {
+    const { renderFilterOnWorker, configureFilterWorkerPool, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
+    configureFilterWorkerPool(2);
+
+    let firstResolved = false;
+    let latestResolved = false;
+    renderFilterOnWorker(fakeImageData(), fakeSettings("first"), { consumer: "preview" }).then(() => {
+      firstResolved = true;
+    });
+    const latest = renderFilterOnWorker(fakeImageData(), fakeSettings("latest"), { consumer: "preview" }).then(() => {
+      latestResolved = true;
+    });
+
+    expect(workers).toHaveLength(1);
+    expect(workers[0].posted.map((m) => m.kind)).toEqual(["render", "abort", "render"]);
+
+    respond(workers[0], 1);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(firstResolved).toBe(false);
+
+    respond(workers[0], 2);
+    await latest;
+    expect(latestResolved).toBe(true);
+    cancelPendingFilterRenders();
+  });
+
+  it("cancelPendingFilterRenders with a consumer name cancels only that consumer", async () => {
+    const { renderFilterOnWorker, configureFilterWorkerPool, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
+    configureFilterWorkerPool(2);
+
+    const previewP = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "preview" });
+    const studioP = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "studio" });
+
+    expect(workers).toHaveLength(2);
+    cancelPendingFilterRenders("preview");
+
+    // Studio still resolves; preview is dropped (no rejection, just no resolve).
+    respond(workers[1], 2);
+    const result = await studioP;
+    expect(result.width).toBe(2);
+
+    // Resolving preview's id afterwards is a no-op; its promise stays pending.
+    respond(workers[0], 1);
+    let previewResolved = false;
+    void previewP.then(() => {
+      previewResolved = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(previewResolved).toBe(false);
+  });
+
+  it("evicts the oldest consumer when the pool cap is exceeded", async () => {
+    const { renderFilterOnWorker, configureFilterWorkerPool, cancelPendingFilterRenders } = await import("@/lib/filter-worker");
+    configureFilterWorkerPool(2);
+
+    const liveWorkers = () => workers.filter((w) => !w.terminate.mock.calls.length);
+    const terminatedWorkers = () => workers.filter((w) => w.terminate.mock.calls.length);
+
+    // Fill the pool with two consumers.
+    const aP = renderFilterOnWorker(fakeImageData(), fakeSettings("a"), { consumer: "alpha" });
+    const bP = renderFilterOnWorker(fakeImageData(), fakeSettings("b"), { consumer: "beta" });
+    const alphaWorker = liveWorkers()[0];
+    const betaWorker = liveWorkers()[1];
+    expect(workers).toHaveLength(2);
+
+    // Adding a third consumer should evict the oldest ("alpha") and spin up a
+    // fresh worker for gamma. The old alpha worker is terminated.
+    const cP = renderFilterOnWorker(fakeImageData(), fakeSettings("c"), { consumer: "gamma" });
+
+    expect(terminatedWorkers()).toContain(alphaWorker);
+    // alpha's in-flight was aborted before terminate.
+    expect(alphaWorker.posted.map((m) => m.kind)).toEqual(["render", "abort"]);
+    // gamma got a fresh worker that posted a single render.
+    const gammaWorker = liveWorkers().find((w) => w !== betaWorker);
+    expect(gammaWorker).toBeDefined();
+    expect(gammaWorker!.posted.map((m) => m.kind)).toEqual(["render"]);
+    // beta is untouched.
+    expect(betaWorker.posted.map((m) => m.kind)).toEqual(["render"]);
+
+    // Drain.
+    respond(betaWorker, 2);
+    respond(gammaWorker!, 3);
+    await bP;
+    await cP;
+    // alpha's promise is dropped (cancelled), no resolve, no reject.
+    let aResolved = false;
+    void aP.then(() => {
+      aResolved = true;
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(aResolved).toBe(false);
     cancelPendingFilterRenders();
   });
 });

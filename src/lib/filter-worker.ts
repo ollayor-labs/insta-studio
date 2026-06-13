@@ -16,16 +16,6 @@ export interface FilterWorkerRequest {
   settings: ResolvedFilterSettings;
 }
 
-/**
- * Tells the worker to abort the in-flight render for `id`. The worker
- * checks an internal abort flag between engine passes; if the flag is set,
- * the engine returns early and the worker posts an "aborted" response
- * (with no pixel data) so the broker can clear the in-flight slot.
- *
- * `id` must match the id of an outstanding render. If the worker has
- * already finished that render by the time this message is processed, the
- * abort is a no-op.
- */
 export interface FilterWorkerAbort {
   kind: "abort";
   id: number;
@@ -74,85 +64,140 @@ export interface RenderJob {
   cancelled: boolean;
 }
 
-interface Broker {
-  worker: Worker | null;
+interface PoolEntry {
+  worker: Worker;
   inFlight: RenderJob | null;
-  pending: RenderJob | null; // latest superseded job, dispatched when the worker frees up
+}
+
+interface Broker {
+  /**
+   * Per-consumer worker pools. Each consumer gets its own dedicated
+   * worker and its own cancel-in-flight (latest-wins) semantics
+   * within that worker. Different consumers run in parallel.
+   *
+   * The default consumer is `"default"`, used when callers don't
+   * pass a `consumer` argument. The first call to renderFilterOnWorker
+   * allocates a worker for `"default"` and reuses it for the rest
+   * of the session.
+   */
+  byConsumer: Map<string, PoolEntry>;
   nextId: number;
+  maxWorkers: number;
+}
+
+function defaultMaxWorkers(): number {
+  if (typeof navigator === "undefined") return 2;
+  const cores = navigator.hardwareConcurrency ?? 4;
+  return Math.max(1, Math.min(4, cores - 1));
 }
 
 const broker: Broker = {
-  worker: null,
-  inFlight: null,
-  pending: null,
+  byConsumer: new Map(),
   nextId: 1,
+  maxWorkers: 0,
 };
 
-function createBrokerWorker(): Worker {
-  const worker = createFilterWorker();
-  worker.onmessage = (event: MessageEvent<WorkerToBroker>) => {
+function attachWorkerHandlers(entry: PoolEntry): void {
+  entry.worker.onmessage = (event: MessageEvent<WorkerToBroker>) => {
     const msg = event.data;
+    const job = entry.inFlight;
+    if (!job) return;
     if (msg.kind === "aborted") {
-      // The worker finished an aborted render. Clear the in-flight slot
-      // and dispatch whatever's pending. The cancelled job's promise is
-      // never resolved (the user's newer render will be).
-      if (broker.inFlight && broker.inFlight.id === msg.id) {
-        broker.inFlight = null;
-      }
-      dispatchNext();
+      // Only clear the slot if the abort is for the currently in-flight
+      // job. A stale abort for an already-superseded job should be ignored.
+      if (job.id === msg.id) entry.inFlight = null;
       return;
     }
-    // msg.kind === "result"
-    const job = broker.inFlight;
-    if (!job || job.id !== msg.id) {
-      // The result is for a job that was superseded or cancelled. The
-      // worker's buffer has been transferred into this event but the
-      // main thread doesn't need it; let it be GC'd by detaching via
-      // a no-op Uint8ClampedArray view.
-      // (We don't call .slice() — that would copy. The buffer is
-      // already detached from the worker once postMessage returned.)
-      return;
-    }
-    broker.inFlight = null;
-    if (job.cancelled) {
-      // The job was cancelled (e.g. image changed, component unmounted).
-      // We drop the result and never resolve the promise.
-      dispatchNext();
-      return;
-    }
+    // Stale result for a job that no longer matches in-flight. Drop
+    // the pixel data on the floor and leave in-flight alone — clearing
+    // it here would clobber the live job that supersedes the stale one.
+    if (job.id !== msg.id) return;
+    entry.inFlight = null;
+    if (job.cancelled) return;
     const result = new ImageData(
       new Uint8ClampedArray(msg.buffer),
       msg.width,
       msg.height,
     );
     job.resolve(result);
-    dispatchNext();
   };
-  worker.onerror = (event) => {
-    const job = broker.inFlight;
-    broker.inFlight = null;
+  entry.worker.onerror = (event) => {
+    const job = entry.inFlight;
+    entry.inFlight = null;
     if (job && !job.cancelled) {
       job.reject(event.error ?? new Error("Worker render failed"));
     }
-    // Continue draining; the next job may succeed.
-    dispatchNext();
   };
-  return worker;
 }
 
-function ensureWorker(): Worker {
-  if (broker.worker) return broker.worker;
-  broker.worker = createBrokerWorker();
-  return broker.worker;
-}
+// WebGL preview path (future) -------------------------------------------------
+//
+// Today every consumer runs on a dedicated JS filter worker. The broker is
+// designed so that a single consumer can later be backed by a WebGL
+// pipeline instead, with no API changes for the other consumers.
+//
+// Integration points in this file:
+//
+//   1. `getOrCreateConsumerEntry` is where a per-consumer backend is chosen.
+//      When the WebGL preview path lands, this is the place to dispatch on
+//      `consumer`: a "preview" consumer would resolve to a WebGL-backed
+//      entry (offscreen canvas + fragment shader, or a WebGL2 worker),
+//      while studio/export keep their JS workers for parity and
+//      reproducibility.
+//
+//   2. The `PoolEntry` shape stays the same — the WebGL backend just needs
+//      to honor the same `postMessage`/`onmessage` contract that the JS
+//      worker exposes today, or be wrapped in a thin adapter.
+//
+//   3. The `entry.worker.onerror` handler in `attachWorkerHandlers` is the
+//      single place that surfaces backend failure. A WebGL backend must
+//      dispatch a synthetic `error` event here when it observes
+//      `webglcontextlost` (the GPU process reset, the tab was backgrounded
+//      too long, the driver crashed, etc.). The current handler rejects
+//      the in-flight promise; a richer version can additionally evict the
+//      entry, mark the consumer as "degraded," and pin it to the JS worker
+//      for the rest of the session so the user sees something instead of a
+//      hard failure. The eviction path in `getOrCreateConsumerEntry` will
+//      then re-create a healthy worker the next time the consumer is
+//      reused.
+//
+//   4. The `inFlight` slot already serves as the per-consumer latest-wins
+//      gate for a WebGL backend too: a new render aborts the previous by
+//      setting `cancelled = true`, and the backend can check that flag
+//      between draw calls (or in the rAF callback) the same way the JS
+//      engine checks it between engine passes.
+//
+//   5. The pool cap and eviction policy are backend-agnostic, so a WebGL
+//      consumer is bounded the same way and competes for slots fairly.
 
-function postRender(worker: Worker, job: RenderJob): void {
-  if (job.cancelled) {
-    // Race: the job was cancelled before we could dispatch it.
-    broker.inFlight = null;
-    dispatchNext();
-    return;
+function getOrCreateConsumerEntry(consumer: string): PoolEntry {
+  let entry = broker.byConsumer.get(consumer);
+  if (entry) return entry;
+  if (broker.maxWorkers === 0) {
+    broker.maxWorkers = defaultMaxWorkers();
   }
+  if (broker.byConsumer.size >= broker.maxWorkers) {
+    // Reuse the oldest consumer's entry as a fallback. This is a
+    // last-resort path; the typical case is one consumer per worker
+    // and the broker's callers stick to a small set of consumer
+    // names. If we hit the cap, the oldest consumer's in-flight
+    // gets aborted (it'll be picked up again on the next call).
+    const [oldestConsumer, oldestEntry] = broker.byConsumer.entries().next().value as [string, PoolEntry];
+    if (oldestEntry.inFlight) {
+      oldestEntry.inFlight.cancelled = true;
+      oldestEntry.worker.postMessage({ kind: "abort", id: oldestEntry.inFlight.id } satisfies FilterWorkerAbort);
+    }
+    oldestEntry.worker.terminate();
+    broker.byConsumer.delete(oldestConsumer);
+  }
+  const worker = createFilterWorker();
+  entry = { worker, inFlight: null };
+  attachWorkerHandlers(entry);
+  broker.byConsumer.set(consumer, entry);
+  return entry;
+}
+
+function postRender(entry: PoolEntry, job: RenderJob): void {
   const id = job.id;
   const buffer = job.source.data.slice().buffer;
   const request: FilterWorkerRequest = {
@@ -163,37 +208,50 @@ function postRender(worker: Worker, job: RenderJob): void {
     buffer,
     settings: job.settings,
   };
-  worker.postMessage(request, [buffer]);
+  entry.worker.postMessage(request, [buffer]);
 }
 
-function postAbort(worker: Worker, id: number): void {
+function postAbort(entry: PoolEntry, id: number): void {
   const abort: FilterWorkerAbort = { kind: "abort", id };
-  worker.postMessage(abort);
+  entry.worker.postMessage(abort);
 }
 
 /**
- * Pulls the next job to run. Called whenever the worker becomes free
- * (start of session, response received, error). Latest-wins semantics:
- * the most recent non-cancelled job is the one that runs.
+ * Configure the worker pool size (maximum number of consumers that
+ * can have an in-flight render at once). Tests can pin this to a
+ * known value. Production callers should leave the default alone.
  */
-function dispatchNext(): void {
-  if (broker.inFlight) return;
-  const next = broker.pending;
-  if (!next) return;
-  broker.pending = null;
-  if (next.cancelled) {
-    dispatchNext();
-    return;
-  }
-  broker.inFlight = next;
-  const worker = ensureWorker();
-  postRender(worker, next);
+export function configureFilterWorkerPool(maxWorkers: number): void {
+  const clamped = Math.max(1, Math.min(8, Math.floor(maxWorkers)));
+  broker.maxWorkers = clamped;
+}
+
+export function getFilterWorkerPoolSize(): number {
+  return broker.maxWorkers === 0 ? defaultMaxWorkers() : broker.maxWorkers;
+}
+
+export interface RenderFilterOptions {
+  /**
+   * Identifier for the consumer requesting this render. Different
+   * consumers get dedicated workers and run in parallel; the same
+   * consumer's renders use cancel-in-flight (latest-wins) on its
+   * dedicated worker.
+   *
+   * The default consumer is `"default"`; preview, studio, and export
+   * pipelines pass distinct names so they can render concurrently.
+   * With a small number of consumers, the broker stays at or under
+   * its default cap; configureFilterWorkerPool can raise the cap
+   * for higher concurrency.
+   */
+  consumer?: string;
 }
 
 export function renderFilterOnWorker(
   sourceData: ImageData,
   settings: ResolvedFilterSettings,
+  options: RenderFilterOptions = {},
 ): Promise<ImageData> {
+  const consumer = options.consumer ?? "default";
   return new Promise<ImageData>((resolve, reject) => {
     const job: RenderJob = {
       id: broker.nextId,
@@ -205,50 +263,37 @@ export function renderFilterOnWorker(
     };
     broker.nextId += 1;
 
-    if (broker.inFlight) {
-      // Latest-wins: the new job supersedes both the in-flight and
-      // any already-pending job. Mark the in-flight as cancelled (its
-      // result will be dropped when it arrives), tell the worker to
-      // abort it, and queue the new job as pending.
-      const superseded = broker.inFlight;
-      superseded.cancelled = true;
-      broker.inFlight = null;
-      const worker = broker.worker ?? ensureWorker();
-      postAbort(worker, superseded.id);
-      if (broker.pending) {
-        broker.pending.cancelled = true;
-      }
-      broker.pending = job;
-    } else if (broker.pending) {
-      // No in-flight (worker is between jobs) but a pending job is
-      // already queued. Latest-wins: drop the older pending and queue
-      // the new one. The pending job's promise is never resolved.
-      broker.pending.cancelled = true;
-      broker.pending = job;
-    } else {
-      broker.pending = job;
-    }
+    const entry = getOrCreateConsumerEntry(consumer);
 
-    dispatchNext();
+    // Latest-wins within a consumer: if there's an in-flight job
+    // on this entry, abort it and replace with the new one.
+    if (entry.inFlight) {
+      entry.inFlight.cancelled = true;
+      postAbort(entry, entry.inFlight.id);
+    }
+    entry.inFlight = job;
+    postRender(entry, job);
   });
 }
 
 /**
- * Drop all queued and in-flight jobs without resolving their promises.
- * Used when the caller (typically a React hook) is unmounting or about
- * to reset its source raster. Cancelled jobs are simply dropped when
- * the worker eventually responds.
+ * Drop all in-flight jobs for a consumer (or all consumers if none
+ * is given) without resolving their promises. Used when a React
+ * hook unmounts or the source raster resets.
  */
-export function cancelPendingFilterRenders(): void {
-  if (broker.pending) {
-    broker.pending.cancelled = true;
-    broker.pending = null;
+export function cancelPendingFilterRenders(consumer?: string): void {
+  if (consumer) {
+    const entry = broker.byConsumer.get(consumer);
+    if (entry?.inFlight) {
+      entry.inFlight.cancelled = true;
+      entry.inFlight = null;
+    }
+    return;
   }
-  if (broker.inFlight) {
-    broker.inFlight.cancelled = true;
-    // The worker is still processing. We don't send an abort here
-    // because the next render request (if any) will replace this
-    // in-flight and trigger the abort. The result, when it arrives,
-    // is dropped by the cancelled check in onmessage.
+  for (const entry of broker.byConsumer.values()) {
+    if (entry.inFlight) {
+      entry.inFlight.cancelled = true;
+      entry.inFlight = null;
+    }
   }
 }
