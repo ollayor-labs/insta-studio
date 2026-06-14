@@ -10,14 +10,18 @@
 export type { PreviewBackend, PreviewBackendKind, RenderRequest, RenderResult, RenderRejection, RenderOutcome, PreviewAbortSignal } from "./types";
 export { JsBackend } from "./js-backend";
 export type { JsBackendInit } from "./js-backend";
-export { WebGlBackend, isWebGlPreviewSupported } from "./webgl-backend";
+export { WebGlBackend, isWebGlPreviewSupported, splitToneTint, packSplitToneUniforms, composeChannelLut } from "./webgl-backend";
 export type { WebGlBackendState, WebGlBackendOptions } from "./webgl-backend";
 export {
   setPreviewBackendPolicy,
   getPreviewBackendPolicy,
   settingsRequireBlurPasses,
+  settingsExceedHslBandCap,
+  WEBGL_MAX_HSL_BANDS,
   setWebGlDegraded,
   isWebGlDegraded,
+  subscribeToWebGlDegraded,
   type BackendFactory,
+  type BackendFactoryInit,
   type PreviewBackendPolicy,
 } from "./selection";

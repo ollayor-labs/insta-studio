@@ -30,3 +30,4 @@ dist-ssr
 bun.lock
 bun.lockb
 /qwen
+.codex/
