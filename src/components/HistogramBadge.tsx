@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from "react";
-import { AlertTriangle, BarChart3 } from "lucide-react";
+import { BarChart3 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import type { ChannelHistogram, ClippingChannels, Histogram } from "@/lib/filterEngine";
@@ -93,15 +93,16 @@ const HistogramBadge: React.FC<HistogramBadgeProps> = ({
           type="button"
           onClick={() => setExpanded((value) => !value)}
           className={cn(
-            "flex items-center gap-2 rounded-full border border-border bg-background/70 px-2.5 py-1 font-mono-ui text-[10px] uppercase tracking-[0.18em] text-muted-foreground shadow-md backdrop-blur-md transition-colors",
-            hasClipping ? "border-destructive/60 text-destructive" : "hover:text-foreground",
+            "flex h-7 w-7 items-center justify-center rounded-full border border-white/10 bg-background/55 text-muted-foreground shadow-sm backdrop-blur-md transition-colors",
+            hasClipping
+              ? "border-destructive/60 text-destructive"
+              : "hover:text-foreground hover:border-white/20",
             className,
           )}
           aria-label="Toggle histogram"
+          title="Histogram"
         >
           <BarChart3 className="h-3.5 w-3.5" />
-          <span>Histogram</span>
-          {hasClipping ? <AlertTriangle className="h-3 w-3" /> : null}
         </button>
       </TooltipTrigger>
       <TooltipContent side="bottom" align="start" className="border-border bg-popover p-3 text-foreground">

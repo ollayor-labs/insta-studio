@@ -164,6 +164,11 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
     if (!image) return null;
     return previewDisplaySize(image, zoom) ?? { width: 0, height: 0 };
   }, [image, zoom]);
+  // The compare seam reads its x from the stage's rendered width. When
+  // the stage hasn't been laid out yet (displaySize is 0/0 during the
+  // first commit), we skip rendering the seam rather than letting it
+  // sit at an undefined position.
+  const stageWidth = displaySize?.width ?? 0;
 
   useEffect(() => {
     const previewCanvas = previewCanvasRef.current;
@@ -500,10 +505,19 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
       const containerHeight = container.clientHeight;
       const stageLeftInContainer = (containerWidth - newStageWidth) / 2;
       const stageTopInContainer = (containerHeight - newStageHeight) / 2;
-      const cursorXInContainer = event.clientX - containerRect.left + container.scrollLeft;
-      const cursorYInContainer = event.clientY - containerRect.top + container.scrollTop;
-      const newScrollLeft = cursorXInContainer - stageLeftInContainer - targetXInNewStage;
-      const newScrollTop = cursorYInContainer - stageTopInContainer - targetYInNewStage;
+      // Cursor position in the container's viewport (what the user sees
+      // under the pointer). We want the image point that's currently
+      // under the cursor to remain under the cursor after the zoom.
+      // The image point at `targetXInNewStage` inside the new stage sits
+      // at `stageLeftInContainer + targetXInNewStage` in the container's
+      // content coordinates. For that point to land at the cursor's
+      // viewport position, the new scrollLeft must satisfy:
+      //   (stageLeftInContainer + targetXInNewStage) - newScrollLeft = cursorViewportX
+      //   newScrollLeft = stageLeftInContainer + targetXInNewStage - cursorViewportX
+      const cursorViewportX = event.clientX - containerRect.left;
+      const cursorViewportY = event.clientY - containerRect.top;
+      const newScrollLeft = stageLeftInContainer + targetXInNewStage - cursorViewportX;
+      const newScrollTop = stageTopInContainer + targetYInNewStage - cursorViewportY;
 
       pendingScrollRef.current = {
         left: Math.max(0, newScrollLeft),
@@ -609,7 +623,7 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
                     // the right. CSS `clip-path` with a
                     // percentage is GPU-composited, so this is
                     // essentially free on the render thread.
-                    clipPath: `inset(0 calc(100% - var(--filtr-compare-position, 50%)) 0 0)`,
+                    clipPath: `inset(0 calc(100% - ${comparePosition}%) 0 0)`,
                   }
                 : { opacity: 0 }
           }
@@ -642,15 +656,16 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
             <div className="filtr-render-aura absolute inset-[12%] rounded-[28px]" />
           </div>
         ) : null}
-        {compareMode && !showOriginal ? (
-          <div className="pointer-events-none absolute inset-y-0 z-10 left-[var(--filtr-compare-position)] -translate-x-1/2">
-            <div className="relative h-full">
-              <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/90 shadow-[0_0_18px_rgba(255,255,255,0.28)]" />
-              <div className="absolute left-1/2 top-1/2 flex h-11 w-11 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-white/45 bg-background/85 shadow-xl backdrop-blur">
-                <div className="flex items-center gap-1">
-                  <span className="h-4 w-px rounded-full bg-white/80" />
-                  <span className="h-4 w-px rounded-full bg-white/80" />
-                </div>
+        {compareMode && !showOriginal && stageWidth > 0 ? (
+          <div
+            className="pointer-events-none absolute inset-y-0 z-10 flex -translate-x-1/2 items-center justify-center"
+            style={{ left: `${comparePosition}%`, width: 0 }}
+          >
+            <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-white/90 shadow-[0_0_18px_rgba(255,255,255,0.28)]" />
+            <div className="relative z-10 flex h-11 w-11 items-center justify-center rounded-full border border-white/45 bg-background/85 shadow-xl backdrop-blur">
+              <div className="flex items-center gap-1">
+                <span className="h-4 w-px rounded-full bg-white/80" />
+                <span className="h-4 w-px rounded-full bg-white/80" />
               </div>
             </div>
           </div>
