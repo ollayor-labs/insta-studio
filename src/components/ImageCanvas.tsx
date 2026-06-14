@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import HistogramBadge from "@/components/HistogramBadge";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { detectClippingFromImageData, type ClippingChannels, type ImageAnalysis } from "@/lib/filterEngine";
+import type { BackendStatus } from "@/hooks/useFilter";
 
 interface ImageCanvasProps {
   image: HTMLImageElement | null;
@@ -9,6 +10,18 @@ interface ImageCanvasProps {
   sourceImageData: ImageData | null;
   filteredImageData: ImageData | null;
   studioImageData: ImageData | null;
+  /**
+   * The canvas the WebGL backend renders the live preview into.
+   * Owned by the page (which also passes it to `useFilter`); the
+   * component here just mounts the `<canvas>` element. The
+   * backend writes directly to this canvas -- the component
+   * itself never `putImageData`s the filtered frame. The
+   * `filteredImageData` prop is still passed (for the
+   * `useFilter` callers that resolve with the source as a
+   * side-effect on the canvas-bound path) and is used here only
+   * for transition source bookkeeping.
+   */
+  previewCanvasRef: React.MutableRefObject<HTMLCanvasElement | null>;
   viewMode: "edited" | "original" | "studio";
   compareMode: boolean;
   comparePosition: number;
@@ -17,11 +30,30 @@ interface ImageCanvasProps {
   onZoomChange: (value: number) => void;
   isProcessing: boolean;
   studioIsProcessing?: boolean;
+  backendStatus?: BackendStatus | null;
+  studioBackendStatus?: BackendStatus | null;
   sourceAnalysis: ImageAnalysis | null;
 }
 
 function clampZoom(value: number): number {
   return Math.max(25, Math.min(400, Math.round(value)));
+}
+
+// Preview canvas display caps. Shared between the size effect
+// (which writes the CSS variables) and the wheel-zoom handler
+// (which predicts the next stage size for cursor anchoring).
+// Keeping them as a single source of truth ensures the wheel
+// handler doesn't fight the size effect when zoom changes.
+const PREVIEW_MAX_WIDTH = 1200;
+const PREVIEW_MAX_HEIGHT = 800;
+
+function previewDisplaySize(image: HTMLImageElement | null, zoom: number): { width: number; height: number } | null {
+  if (!image) return null;
+  const scale = Math.min(PREVIEW_MAX_WIDTH / image.width, PREVIEW_MAX_HEIGHT / image.height, 1);
+  return {
+    width: image.width * scale * (zoom / 100),
+    height: image.height * scale * (zoom / 100),
+  };
 }
 
 function distanceBetween(first: { x: number; y: number }, second: { x: number; y: number }): number {
@@ -34,6 +66,7 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
   sourceImageData,
   filteredImageData,
   studioImageData,
+  previewCanvasRef,
   viewMode,
   compareMode,
   comparePosition,
@@ -42,9 +75,18 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
   onZoomChange,
   isProcessing,
   studioIsProcessing = false,
+  backendStatus = null,
+  studioBackendStatus = null,
   sourceAnalysis,
 }) => {
-  const baseCanvasRef = useRef<HTMLCanvasElement>(null);
+  // `previewCanvasRef` is owned by the page (which also threads it
+  // to `useFilter`). The WebGL backend writes the filtered preview
+  // directly into `previewCanvasRef.current` -- we never
+  // `putImageData` the filtered frame here. The original and
+  // studio overlays below are 2D canvases we own locally; they're
+  // drawn from the `sourceImageData` / `studioImageData` props.
+  const originalCanvasRef = useRef<HTMLCanvasElement>(null);
+  const studioCanvasRef = useRef<HTMLCanvasElement>(null);
   const revealCanvasRef = useRef<HTMLCanvasElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -63,6 +105,7 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
   const [revealRadius, setRevealRadius] = useState(0);
   const previousFilterRef = useRef(filterName);
   const showOriginal = viewMode === "original";
+  const showStudio = viewMode === "studio";
   const activeFrame =
     viewMode === "original"
       ? sourceImageData
@@ -111,26 +154,39 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
     clearReveal();
   }, [clearReveal, filterName, filteredImageData, image, sourceImageData]);
 
+  // Compute the display dimensions for the image at the current
+  // zoom. Used both for the stage's explicit size (so absolutely
+  // positioned canvases have a containing box) and for the CSS
+  // variables the canvases read via `--filtr-canvas-width` /
+  // `--filtr-canvas-height`. Memoized so the size effect below
+  // and the stage's inline style agree.
+  const displaySize = useMemo(() => {
+    if (!image) return null;
+    return previewDisplaySize(image, zoom) ?? { width: 0, height: 0 };
+  }, [image, zoom]);
+
   useEffect(() => {
-    const baseCanvas = baseCanvasRef.current;
+    const previewCanvas = previewCanvasRef.current;
+    const originalCanvas = originalCanvasRef.current;
+    const studioCanvas = studioCanvasRef.current;
     const revealCanvas = revealCanvasRef.current;
     const stage = stageRef.current;
-    if (!baseCanvas || !stage || !image) return;
+    if (!previewCanvas || !stage || !displaySize) return;
 
-    const maxWidth = 1200;
-    const maxHeight = 800;
-    const scale = Math.min(maxWidth / image.width, maxHeight / image.height, 1);
-    const displayWidth = image.width * scale * (zoom / 100);
-    const displayHeight = image.height * scale * (zoom / 100);
-
-    baseCanvas.style.setProperty("--filtr-canvas-width", `${displayWidth}px`);
-    baseCanvas.style.setProperty("--filtr-canvas-height", `${displayHeight}px`);
-    baseCanvas.style.setProperty("--filtr-image-rendering", zoom > 175 ? "pixelated" : "auto");
-    revealCanvas?.style.setProperty("--filtr-canvas-width", `${displayWidth}px`);
-    revealCanvas?.style.setProperty("--filtr-canvas-height", `${displayHeight}px`);
-    revealCanvas?.style.setProperty("--filtr-image-rendering", zoom > 175 ? "pixelated" : "auto");
+    // Set CSS dimensions on every canvas. The WebGL canvas's
+    // `width`/`height` attributes (the framebuffer size) are set
+    // by the backend on first render; CSS sizing is independent
+    // and lives here. The original/studio/reveal canvases are 2D
+    // and their `width`/`height` is set by `drawOverlayFrame` to
+    // match the source frame size.
+    for (const c of [previewCanvas, originalCanvas, studioCanvas, revealCanvas]) {
+      if (!c) continue;
+      c.style.setProperty("--filtr-canvas-width", `${displaySize.width}px`);
+      c.style.setProperty("--filtr-canvas-height", `${displaySize.height}px`);
+      c.style.setProperty("--filtr-image-rendering", zoom > 175 ? "pixelated" : "auto");
+    }
     stage.style.setProperty("--filtr-compare-position", `${comparePosition}%`);
-  }, [comparePosition, image, zoom]);
+  }, [comparePosition, displaySize, zoom, previewCanvasRef]);
 
   // Apply the cursor-anchored scroll offset produced by the wheel handler.
   // This is a layout effect so the scroll lands on the same frame the
@@ -145,7 +201,14 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
     container.scrollTop = pending.top;
   });
 
-  const drawSingleFrame = useCallback((canvas: HTMLCanvasElement | null, frame: ImageData | null) => {
+  // Draw a 2D `ImageData` into a 2D canvas. Used for the
+  // source / studio / reveal overlays; the WebGL preview canvas
+  // is written by the backend and never touched here. Resizing
+  // the canvas's `width`/`height` clears the framebuffer (per
+  // spec), so we only do it when the frame dimensions actually
+  // change -- otherwise we'd be doing a redundant clear + realloc
+  // on every render.
+  const drawOverlayFrame = useCallback((canvas: HTMLCanvasElement | null, frame: ImageData | null) => {
     if (!canvas) return;
 
     const context = canvas.getContext("2d");
@@ -156,37 +219,48 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
       return;
     }
 
-    canvas.width = frame.width;
-    canvas.height = frame.height;
+    if (canvas.width !== frame.width || canvas.height !== frame.height) {
+      canvas.width = frame.width;
+      canvas.height = frame.height;
+    }
 
     context.clearRect(0, 0, frame.width, frame.height);
     context.putImageData(frame, 0, 0);
   }, []);
 
-  const drawCompositeFrame = useCallback((canvas: HTMLCanvasElement | null) => {
-    const source = sourceImageData;
-    if (!canvas || !source) return;
-
-    canvas.width = source.width;
-    canvas.height = source.height;
-
-    const context = canvas.getContext("2d");
-    if (!context) return;
-
-    context.clearRect(0, 0, source.width, source.height);
-
-    if (showOriginal || !activeFrame) {
-      context.putImageData(source, 0, 0);
+  // Redraw the original-canvas overlay when the source data
+  // changes. Compare mode and "view original" mode both need
+  // the source pixels; drawing them into a separate 2D canvas
+  // (above the WebGL preview canvas) means compare mode can
+  // show them on the right half via a CSS `clip-path` and
+  // "view original" can show them in full -- no `putImageData`
+  // into the WebGL canvas, no per-frame compositing.
+  useEffect(() => {
+    if (!sourceImageData) {
+      const ctx = originalCanvasRef.current?.getContext("2d");
+      ctx?.clearRect(0, 0, originalCanvasRef.current?.width ?? 0, originalCanvasRef.current?.height ?? 0);
       return;
     }
+    drawOverlayFrame(originalCanvasRef.current, sourceImageData);
+  }, [sourceImageData, drawOverlayFrame]);
 
-    context.putImageData(activeFrame, 0, 0);
-
-    if (compareMode) {
-      const splitX = Math.max(0, Math.min(source.width, Math.round(source.width * (comparePosition / 100))));
-      context.putImageData(source, 0, 0, 0, 0, splitX, source.height);
+  // Redraw the studio overlay when the studio render resolves.
+  useEffect(() => {
+    if (!studioImageData) {
+      const ctx = studioCanvasRef.current?.getContext("2d");
+      ctx?.clearRect(0, 0, studioCanvasRef.current?.width ?? 0, studioCanvasRef.current?.height ?? 0);
+      return;
     }
-  }, [activeFrame, compareMode, comparePosition, showOriginal, sourceImageData]);
+    drawOverlayFrame(studioCanvasRef.current, studioImageData);
+  }, [studioImageData, drawOverlayFrame]);
+
+  // Redraw the reveal overlay when the transition source /
+  // reveal frame changes. The reveal animation drives
+  // `revealRadius` via rAF; the frame is set once at the start
+  // of the transition and cleared at the end (via `clearReveal`).
+  useEffect(() => {
+    drawOverlayFrame(revealCanvasRef.current, revealFrame);
+  }, [revealFrame, drawOverlayFrame]);
 
   useEffect(() => {
     if (!transitionEnabled) {
@@ -200,12 +274,48 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
     if (!transitionEnabled || previousFilterRef.current === filterName) return;
 
     previousFilterRef.current = filterName;
+    // On the canvas-bound path, the WebGL backend renders
+    // directly into `previewCanvasRef.current`, so the only
+    // way to grab the *previous* filtered frame for the
+    // transition is to read it from the canvas itself. The
+    // preview canvas already has a WebGL2 context, so
+    // `getContext('2d')` returns null. We have to draw the
+    // WebGL canvas into a *separate* 2D canvas to capture
+    // its pixels. The WebGL context is created with
+    // `preserveDrawingBuffer: true` (see `webgl-backend.ts`)
+    // so the WebGL canvas is still readable at this point.
+    //
+    // The capture is a one-time cost at filter-change time
+    // (~3.8 MB readback on a 1200x800 preview), not per
+    // frame. The user explicitly accepts this in exchange
+    // for the canvas-bound fast path on the hot render
+    // loop. The fallback path (no canvas ref, or capture
+    // failed) uses the JS-resolved `filteredImageData` as
+    // before.
+    const previewCanvas = previewCanvasRef.current;
+    if (previewCanvas && previewCanvas.width > 0 && previewCanvas.height > 0) {
+      try {
+        const capture = document.createElement("canvas");
+        capture.width = previewCanvas.width;
+        capture.height = previewCanvas.height;
+        const ctx = capture.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(previewCanvas, 0, 0);
+          const snapshot = ctx.getImageData(0, 0, capture.width, capture.height);
+          clearReveal();
+          setTransitionSource(snapshot);
+          return;
+        }
+      } catch (err) {
+        // Fall through to the JS-engine path below.
+      }
+    }
     const currentFrame = revealFrame ?? stableFrame ?? filteredImageData ?? sourceImageData;
     if (!currentFrame) return;
 
     clearReveal();
     setTransitionSource(currentFrame);
-  }, [clearReveal, filterName, filteredImageData, revealFrame, sourceImageData, stableFrame, transitionEnabled]);
+  }, [clearReveal, filterName, filteredImageData, previewCanvasRef, revealFrame, sourceImageData, stableFrame, transitionEnabled]);
 
   useEffect(() => {
     if (!transitionEnabled || transitionSource || isProcessing) return;
@@ -227,35 +337,27 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
     }, 560);
   }, [clearReveal, filteredImageData, isProcessing, transitionEnabled, transitionSource]);
 
-  const render = useCallback(() => {
-    const baseCanvas = baseCanvasRef.current;
-    const revealCanvas = revealCanvasRef.current;
-    if (!baseCanvas || !sourceImageData) return;
-
-    if (!transitionEnabled) {
-      drawCompositeFrame(baseCanvas);
-      drawSingleFrame(revealCanvas, null);
-      return;
-    }
-
-    drawSingleFrame(baseCanvas, transitionSource ?? stableFrame ?? activeFrame);
-    drawSingleFrame(revealCanvas, revealFrame);
-  }, [
-    activeFrame,
-    drawCompositeFrame,
-    drawSingleFrame,
-    revealFrame,
-    sourceImageData,
-    stableFrame,
-    transitionEnabled,
-    transitionSource,
-  ]);
-
+  // The old `render` callback used to redraw the base canvas
+  // via `putImageData` on every animation frame. That's gone
+  // now: the WebGL backend writes the preview directly into
+  // `previewCanvasRef.current`, and the overlay canvases are
+  // updated by the data-driven effects above (which only run
+  // when the underlying `ImageData` actually changes). The
+  // transition's rAF loop still drives `revealRadius` for the
+  // CSS `clip-path` animation; the reveal canvas itself is
+  // updated by the `revealFrame` effect, not by a per-frame
+  // redraw. The `rafRef` and the rAF `useEffect` are kept
+  // around (empty) for now so future frame-driven work (e.g.
+  // the magic-reveal `clip-path` interpolation) has a hook to
+  // attach to. The rAF callback is a no-op.
   useEffect(() => {
     window.cancelAnimationFrame(rafRef.current);
-    rafRef.current = window.requestAnimationFrame(render);
+    rafRef.current = window.requestAnimationFrame(() => {
+      // intentionally empty -- the per-frame work moved to the
+      // reveal `clip-path` rAF in the transition effect above.
+    });
     return () => window.cancelAnimationFrame(rafRef.current);
-  }, [render]);
+  }, []);
 
   const updateCompareFromClientX = useCallback(
     (clientX: number) => {
@@ -335,7 +437,7 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
   // the zoom to the cursor so the pixel under the pointer stays under the
   // pointer — the standard image-editor behavior.
   const handleWheel = useCallback(
-    (event: React.WheelEvent<HTMLDivElement>) => {
+    (event: WheelEvent) => {
       if (!image) return;
       // Let Shift+wheel scroll horizontally as the browser does natively.
       if (event.shiftKey) return;
@@ -362,20 +464,20 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
       }
       if (nextZoom === zoom) return;
 
-      // Predict the new stage dimensions so we can anchor the cursor. The
-      // stage is the canvas wrapper; its width/height equal the canvas
-      // display size, which is `image.width * scale * (zoom / 100)`.
-      const maxWidth = 1200;
-      const maxHeight = 800;
-      const scale = Math.min(maxWidth / image.width, maxHeight / image.height, 1);
+      // Predict the new stage dimensions so we can anchor the cursor.
+      // If the stage isn't laid out yet (offsetWidth === 0), we
+      // can't anchor -- just apply the new zoom and let the
+      // size effect re-layout on the next render.
       const oldStageWidth = stage.offsetWidth;
       const oldStageHeight = stage.offsetHeight;
-      const newStageWidth = image.width * scale * (nextZoom / 100);
-      const newStageHeight = image.height * scale * (nextZoom / 100);
       if (oldStageWidth === 0 || oldStageHeight === 0) {
         onZoomChange(nextZoom);
         return;
       }
+      const next = previewDisplaySize(image, nextZoom);
+      if (!next) return;
+      const newStageWidth = next.width;
+      const newStageHeight = next.height;
 
       const stageRect = stage.getBoundingClientRect();
       const containerRect = container.getBoundingClientRect();
@@ -412,6 +514,17 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
     [image, onZoomChange, zoom],
   );
 
+  // Attach a non-passive wheel listener to the stage so we can call
+  // event.preventDefault() without the browser logging a passive-listener
+  // warning. React's synthetic onWheel is always passive at the root;
+  // a native addEventListener with { passive: false } is the fix.
+  useEffect(() => {
+    const stage = stageRef.current;
+    if (!stage) return;
+    stage.addEventListener("wheel", handleWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", handleWheel);
+  }, [handleWheel]);
+
   if (!image || !sourceImageData) return null;
 
   const magicActive = transitionEnabled && Boolean(transitionSource);
@@ -441,17 +554,82 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
       <div
         ref={stageRef}
         className={`filtr-stage relative ${compareMode && !showOriginal ? "cursor-ew-resize touch-none" : "cursor-zoom-in"}`}
+        style={displaySize ? { width: `${displaySize.width}px`, height: `${displaySize.height}px` } : undefined}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
-        onWheel={handleWheel}
       >
+        {/* Preview canvas (WebGL framebuffer). The backend
+            writes the filtered preview directly into this canvas;
+            we never `putImageData` it. The `width`/`height`
+            attributes are set by the backend on first render
+            (matching the source ImageData dimensions); the CSS
+            dimensions are set by the size effect above. Always
+            mounted and always sized, but visually hidden in
+            "view original" / "view studio" modes via the
+            conditional classes below. */}
         <canvas
-          ref={baseCanvasRef}
-          className="filtr-main-canvas rounded-lg shadow-2xl transition-[filter,transform] duration-500 ease-out"
+          ref={previewCanvasRef}
+          className={`filtr-main-canvas rounded-lg shadow-2xl transition-[filter,transform] duration-500 ease-out ${
+            showOriginal || showStudio ? "hidden" : ""
+          }`}
           style={baseCanvasStyle}
         />
+        {/* Original canvas (2D). Drawn from `sourceImageData` via
+            `drawOverlayFrame`. Shown in two cases:
+              - `showOriginal`: full opacity, no clip-path. The
+                user is looking at the source pixels.
+              - `compareMode && !showOriginal`: the left
+                `comparePosition%` is shown (clip-path), the
+                right side is left to the WebGL preview canvas
+                underneath. The compare position is a CSS
+                variable the size effect writes to the stage.
+            The canvas is always mounted (so the
+            `originalCanvasRef` is stable across view changes)
+            but invisible when neither case applies. */}
+        <canvas
+          ref={originalCanvasRef}
+          className={`filtr-main-canvas rounded-lg shadow-2xl transition-[filter,transform] duration-500 ease-out ${
+            showOriginal
+              ? "opacity-100"
+              : compareMode
+                ? "opacity-100"
+                : "opacity-0 pointer-events-none"
+          }`}
+          style={
+            showOriginal
+              ? undefined
+              : compareMode
+                ? {
+                    // Clip-path on the right side: hide the right
+                    // `100% - comparePosition%`, leaving the left
+                    // `comparePosition%` visible. The line is the
+                    // visual divider; the WebGL canvas shows on
+                    // the right. CSS `clip-path` with a
+                    // percentage is GPU-composited, so this is
+                    // essentially free on the render thread.
+                    clipPath: `inset(0 calc(100% - var(--filtr-compare-position, 50%)) 0 0)`,
+                  }
+                : { opacity: 0 }
+          }
+        />
+        {/* Studio canvas (2D). Drawn from `studioImageData` via
+            `drawOverlayFrame`. The studio render is the
+            full-resolution float32 path produced by the JS
+            engine. Shown only in "view studio" mode. */}
+        <canvas
+          ref={studioCanvasRef}
+          className={`filtr-main-canvas rounded-lg shadow-2xl transition-[filter,transform] duration-500 ease-out ${
+            showStudio ? "opacity-100" : "opacity-0 pointer-events-none"
+          }`}
+          style={showStudio ? undefined : { opacity: 0 }}
+        />
+        {/* Reveal canvas (2D, transition overlay). Same
+            treatment as before -- it briefly appears during the
+            magic reveal transition. The frame data is set by
+            the transition effect, the radius is animated via
+            CSS `clip-path`. */}
         <canvas
           ref={revealCanvasRef}
           className={`filtr-overlay-canvas rounded-lg shadow-[0_0_40px_rgba(255,153,72,0.18)] transition-[clip-path,filter,transform,opacity] ${
@@ -486,6 +664,21 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
               {filterName}
             </div>
           </>
+        ) : null}
+        {import.meta.env.DEV && (backendStatus || studioBackendStatus) ? (
+          <div
+            data-testid="backend-chip"
+            className="pointer-events-none absolute bottom-4 right-4 mt-12 rounded-full border border-white/10 bg-background/80 px-3 py-1 font-mono-ui text-[10px] uppercase tracking-[0.18em] text-foreground/80 shadow-lg backdrop-blur-md"
+            style={{ transform: "translateY(2.5rem)" }}
+          >
+            {(() => {
+              const status = backendStatus ?? studioBackendStatus;
+              if (!status) return "Rendering…";
+              if (status.kind === "webgl") return "Rendering on webgl";
+              if (status.blurReason) return `Rendering on js (${status.blurReason} active)`;
+              return "Rendering on js";
+            })()}
+          </div>
         ) : null}
         {sourceAnalysis && liveClipping ? (
           <div className="absolute right-4 top-4 z-10">

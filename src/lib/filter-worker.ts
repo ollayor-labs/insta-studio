@@ -1,4 +1,4 @@
-import type { ResolvedFilterSettings } from '@/lib/filterEngine';
+import type { Adjustments, ResolvedFilterSettings } from '@/lib/filterEngine';
 import type { PreviewAbortSignal, PreviewBackend, PreviewBackendKind, RenderRequest } from '@/lib/webgl-preview';
 import {
   JsBackend,
@@ -7,6 +7,7 @@ import {
   isWebGlDegraded,
   setPreviewBackendPolicy as setPreviewBackendPolicyImpl,
   getPreviewBackendPolicy,
+  type BackendFactoryInit,
 } from '@/lib/webgl-preview';
 
 // Message types --------------------------------------------------------------
@@ -61,6 +62,18 @@ export interface RenderJob {
   id: number;
   source: ImageData;
   settings: ResolvedFilterSettings;
+  /**
+   * The user's slider adjustments, before scene adaptation was
+   * applied. Callers should pass the raw user input (or the
+   * debounced slider state, which is the user's last settled
+   * input -- not a scene-adapted value). The selector uses
+   * this to decide between WebGL and JS for the "preview"
+   * consumer, so scene-adaptation's small non-zero clarity/bloom
+   * injections don't force every photo onto the JS engine.
+   * Optional; when absent, the selector falls back to the
+   * resolved settings' adjustments.
+   */
+  userAdjustments?: Adjustments;
   resolve: (result: ImageData) => void;
   reject: (error: Error) => void;
   cancelled: boolean;
@@ -85,6 +98,17 @@ interface PoolEntry {
    * a fresh JS backend instead of the dead WebGL one.
    */
   preferWebGl: boolean;
+  /**
+   * The canvas ref this entry's backend was constructed with, or
+   * `null` for the legacy `defaultAcquireContext()` path. Tracked
+   * so the broker can detect "same consumer, new canvas ref"
+   * (e.g. `ImageCanvas` remounted, or the user switched to a
+   * different preview element) and evict the stale backend --
+   * its WebGL resources are tied to the old canvas. The broker
+   * already evicts on context loss via `shouldEvictEntry`; this
+   * is the canvas-ref-change equivalent for the fast path.
+   */
+  targetCanvas: HTMLCanvasElement | OffscreenCanvas | null;
 }
 
 interface Broker {
@@ -105,28 +129,33 @@ const broker: Broker = {
   maxWorkers: 0,
 };
 
-function createJsBackendForConsumer(_consumer: string): PreviewBackend {
+function createJsBackendForConsumer(_consumer: string, _init?: BackendFactoryInit): PreviewBackend {
   return new JsBackend({
     createFilterWorker,
     brokerWorkerType: undefined as never, // unused in the current backend impl
   });
 }
 
-function createWebGlBackendForConsumer(_consumer: string): PreviewBackend | null {
+function createWebGlBackendForConsumer(_consumer: string, init?: BackendFactoryInit): PreviewBackend | null {
   if (!isWebGlPreviewSupported()) return null;
-  return new WebGlBackend();
+  return new WebGlBackend({ targetCanvas: init?.targetCanvas ?? null });
 }
 
-function getOrCreateConsumerEntry(consumer: string, settings: ResolvedFilterSettings): PoolEntry {
+function getOrCreateConsumerEntry(
+  consumer: string,
+  settings: ResolvedFilterSettings,
+  userAdjustments: Adjustments | undefined,
+  init: BackendFactoryInit,
+): PoolEntry {
   let entry = broker.byConsumer.get(consumer);
-  if (entry && !shouldEvictEntry(entry, settings)) {
+  if (entry && !shouldEvictEntry(entry, settings, init.targetCanvas ?? null)) {
     // Re-run the selector on every render so a context-lost ->
     // context-restored cycle (or a settings change that flips the
     // backend kind) re-selects the right backend. The cost is a
     // single function call per render; the benefit is correct
     // backend transitions without an explicit "promote/demote"
     // API on the broker.
-    const wantedKind = getPreviewBackendPolicy().select(consumer, settings);
+    const wantedKind = getPreviewBackendPolicy().select(consumer, settings, userAdjustments);
     if (wantedKind !== entry.backend.kind) {
       // Selector wants a different backend than what's cached.
       // Tear down the old entry and fall through to build a new
@@ -140,8 +169,8 @@ function getOrCreateConsumerEntry(consumer: string, settings: ResolvedFilterSett
 
   // No entry yet, or the existing entry's backend can no longer
   // serve the request (e.g. WebGL context lost, settings need a
-  // blur pass that the JS engine should handle). Build (or rebuild)
-  // the entry.
+  // blur pass that the JS engine should handle, or the caller
+  // handed us a new canvas ref). Build (or rebuild) the entry.
   if (entry) {
     entry.backend.dispose();
     broker.byConsumer.delete(consumer);
@@ -159,19 +188,23 @@ function getOrCreateConsumerEntry(consumer: string, settings: ResolvedFilterSett
   }
 
   const policy = getPreviewBackendPolicy();
-  const wantedKind = policy.select(consumer, settings);
+  const wantedKind = policy.select(consumer, settings, userAdjustments);
   let backend: PreviewBackend | null = null;
   let preferWebGl = false;
   if (wantedKind === 'webgl') {
-    backend = policy.createWebGlBackend ? policy.createWebGlBackend(consumer) : createWebGlBackendForConsumer(consumer);
+    backend = policy.createWebGlBackend
+      ? policy.createWebGlBackend(consumer, init)
+      : createWebGlBackendForConsumer(consumer, init);
     preferWebGl = true;
   }
   if (!backend) {
-    backend = policy.createJsBackend ? policy.createJsBackend(consumer) : createJsBackendForConsumer(consumer);
+    backend = policy.createJsBackend
+      ? policy.createJsBackend(consumer, init)
+      : createJsBackendForConsumer(consumer, init);
     preferWebGl = false;
   }
 
-  entry = { backend, inFlight: null, preferWebGl };
+  entry = { backend, inFlight: null, preferWebGl, targetCanvas: init.targetCanvas ?? null };
   broker.byConsumer.set(consumer, entry);
   return entry;
 }
@@ -180,9 +213,25 @@ function getOrCreateConsumerEntry(consumer: string, settings: ResolvedFilterSett
  * Decide whether the existing entry should be evicted and replaced.
  * The current policy is conservative: if the entry's backend is
  * WebGL and is reporting itself degraded (context lost), evict it
- * so the next render lands on a fresh JS backend.
+ * so the next render lands on a fresh JS backend. Also evict
+ * when the caller hands us a canvas ref different from the one
+ * the entry was constructed with -- the WebGL resources are tied
+ * to the old canvas, and keeping them alive would leak contexts.
  */
-function shouldEvictEntry(entry: PoolEntry, _settings: ResolvedFilterSettings): boolean {
+function shouldEvictEntry(
+  entry: PoolEntry,
+  _settings: ResolvedFilterSettings,
+  requestedCanvas: HTMLCanvasElement | OffscreenCanvas | null,
+): boolean {
+  // Canvas-ref change detection for the fast path. A `null` on the
+  // entry but a non-null `requestedCanvas` (or vice versa) also
+  // counts as a change, because the entry's `targetCanvas` is
+  // locked in at construction time. Strict reference equality is
+  // the right check: the broker only ever hands the SAME canvas
+  // back across renders when the caller is reusing it (the common
+  // case in `ImageCanvas` where the canvas ref is stable across
+  // slider changes).
+  if (entry.targetCanvas !== requestedCanvas) return true;
   if (entry.preferWebGl && entry.backend.kind === 'webgl') {
     // The WebGlBackend exposes isDegraded() to report a context
     // loss (per-instance flag flipped in onContextLost). The
@@ -223,6 +272,31 @@ export interface RenderFilterOptions {
    * concurrency.
    */
   consumer?: string;
+  /**
+   * The user's *input* adjustments, before scene adaptation was
+   * applied. When the broker selects a backend for the "preview"
+   * consumer, it consults this to decide whether the user
+   * actually asked for a blur-based pass. Without it, the
+   * selector falls back to the resolved settings' adjustments,
+   * which include scene adaptation's small injections of
+   * clarity/bloom and would force every photo onto the JS
+   * engine. Pass this from any caller that goes through
+   * `prepareFilterSettings` with `adaptToScene: true`.
+   */
+  userAdjustments?: Adjustments;
+  /**
+   * Optional canvas the WebGL backend should render directly
+   * into. When provided, the backend uses this canvas as its
+   * framebuffer and skips `readPixels` -- the browser composites
+   * the canvas without any CPU readback. This is the fast path
+   * for the visible `ImageCanvas` element.
+   *
+   * The broker tracks which canvas ref each consumer's backend
+   * was constructed with, and evicts the cached backend if the
+   * caller hands in a different canvas (e.g. `ImageCanvas`
+   * remounted). The JS backend ignores this field.
+   */
+  targetCanvas?: HTMLCanvasElement | OffscreenCanvas | null;
 }
 
 export function renderFilterOnWorker(
@@ -231,18 +305,20 @@ export function renderFilterOnWorker(
   options: RenderFilterOptions = {},
 ): Promise<ImageData> {
   const consumer = options.consumer ?? 'default';
+  const init: BackendFactoryInit = { targetCanvas: options.targetCanvas ?? null };
   return new Promise<ImageData>((resolve, reject) => {
     const job: RenderJob = {
       id: broker.nextId,
       source: sourceData,
       settings,
+      userAdjustments: options.userAdjustments,
       resolve,
       reject,
       cancelled: false,
     };
     broker.nextId += 1;
 
-    const entry = getOrCreateConsumerEntry(consumer, settings);
+    const entry = getOrCreateConsumerEntry(consumer, settings, options.userAdjustments, init);
 
     // Latest-wins within a consumer: if there's an in-flight job
     // on this entry, cancel it (the backend short-circuits) and

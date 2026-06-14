@@ -110,7 +110,17 @@ const Index = () => {
 
   const prefersReducedMotion = usePrefersReducedMotion();
 
-  const { filteredImageData, studioImageData, sourceImageData, fullImageData, isProcessing, studioIsProcessing } = useFilter({
+  // The WebGL backend renders the live preview directly into
+  // `previewCanvasRef.current`. The page owns the ref because the
+  // `useFilter` hook is what threads it through the broker; the
+  // ref is forwarded to `ImageCanvas` so the canvas element is
+  // actually mounted in the DOM. The hook and the canvas mount
+  // are intentionally decoupled -- the broker evicts and rebuilds
+  // the backend if the ref ever changes, so swapping canvases
+  // (e.g. ImageCanvas remounting after a layout shift) is safe.
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  const { filteredImageData, studioImageData, sourceImageData, fullImageData, isProcessing, studioIsProcessing, backendStatus, studioBackendStatus } = useFilter({
     image,
     filterName: activeFilter,
     adjustments,
@@ -126,6 +136,7 @@ const Index = () => {
       : false,
     adaptToScene: sceneMode === "adaptive",
     viewMode,
+    previewCanvasRef,
   });
 
   const handleImageLoad = useCallback(
@@ -133,6 +144,16 @@ const Index = () => {
       setImage(img);
       setFileName(name);
       setSourceMimeType(mimeType);
+      // The import has succeeded, so the floating "Importing..." badge in
+      // the editor header should be dismissed. The DropZone mirrors its
+      // local loading state into `importingFile` via the `onLoadingChange`
+      // effect, but it unmounts the moment `image` becomes non-null (the
+      // empty-state branch is replaced by the editor branch) -- so the
+      // effect that would clear the parent state never gets to run and
+      // the badge stays stuck on screen. Clearing it here covers both
+      // entry points (DropZone file input / drop / paste and the global
+      // Cmd+V handler in `startImport`).
+      setImportingFile(null);
       setCurrentExifBytes(null);
       setActiveFilter("Original");
       setFilterStrength(100);
@@ -157,7 +178,7 @@ const Index = () => {
         await addRecent({ name, mimeType, blob, exifBytes });
       })().catch(() => {});
     },
-    [addRecent],
+    [addRecent, setImportingFile],
   );
 
   
@@ -616,6 +637,7 @@ const Index = () => {
           sourceImageData={sourceImageData}
           filteredImageData={filteredImageData}
           studioImageData={studioImageData}
+          previewCanvasRef={previewCanvasRef}
           viewMode={effectiveViewMode}
           compareMode={compareMode}
           comparePosition={comparePosition}
@@ -624,6 +646,8 @@ const Index = () => {
           onZoomChange={setZoom}
           isProcessing={isProcessing}
           studioIsProcessing={studioIsProcessing}
+          backendStatus={backendStatus}
+          studioBackendStatus={studioBackendStatus}
           sourceAnalysis={imageAnalysis}
         />
 

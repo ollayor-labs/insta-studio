@@ -5,6 +5,7 @@ import { renderFilterOnWorker } from '@/lib/filter-worker';
 import { resolveExportExtension, resolveExportMime } from '@/lib/exportFormat';
 import { getExifOrientation, withExifInjected } from '@/lib/exif';
 import { showCopyFailedToast, showCopyToast, showDownloadToast } from '@/lib/editorToasts';
+import { SlotLabel } from '@/components/ui/slot-label';
 
 type ExportSize = 'original' | '2x' | '50%';
 type ExportFormat = 'jpeg' | 'png' | 'webp' | 'original';
@@ -388,12 +389,22 @@ const BottomBar: React.FC<BottomBarProps> = ({
           title="Play an animated before/after reveal (Shift+C)"
         >
           <Play className="w-3.5 h-3.5" />
-          {compareReveal === 'playing' ? 'Revealing…' : 'Reveal'}
+          <SlotLabel
+            text={compareReveal === 'playing' ? 'Revealing…' : 'Reveal'}
+            flashColor={compareReveal === 'playing'}
+            skipUnchanged
+            tone="inherit"
+          />
         </button>
 
         {compareMode ? (
           <span className="font-mono-ui text-[10px] text-muted-foreground uppercase tracking-[0.14em]">
-            {compareReveal === 'playing' ? 'Auto-cycling' : 'Drag slider on image'}
+            <SlotLabel
+              text={compareReveal === 'playing' ? 'Auto-cycling' : 'Drag slider on image'}
+              flashColor={compareReveal === 'playing'}
+              skipUnchanged
+              tone="subtle"
+            />
           </span>
         ) : null}
       </div>
@@ -467,7 +478,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
           disabled={copying || exporting}
         >
           <Copy className="w-3 h-3" />
-          {copying ? 'Copied' : 'Copy'}
+          <SlotLabel text={copying ? 'Copied' : 'Copy'} flashColor={copying} tone="muted" />
         </button>
 
         <button
@@ -476,7 +487,11 @@ const BottomBar: React.FC<BottomBarProps> = ({
           disabled={exporting}
         >
           <Download className="w-3 h-3" />
-          {exporting ? 'Exporting' : `Export ${format === 'png' ? 'PNG' : 'JPG'}`}
+          <SlotLabel
+            text={exporting ? 'Exporting' : `Export ${format === 'png' ? 'PNG' : 'JPG'}`}
+            flashColor={exporting}
+            tone="inherit"
+          />
         </button>
       </div>
     </div>

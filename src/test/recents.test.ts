@@ -109,6 +109,7 @@ function makeRequest(): {
 
 class FakeDb implements IDBDatabaseLike {
   store = new FakeStore();
+  objectStoreNames = { contains: (name: string) => name === "recents" };
   transaction(): {
     objectStore: () => IDBObjectStoreLike;
     oncomplete: ((e: Event) => void) | null;
@@ -147,6 +148,12 @@ function makeFactory(): IDBFactoryLike & { __lastDb: FakeDb | null } {
         onupgradeneeded: null as ((e: Event) => void) | null,
       };
       queueMicrotask(() => {
+        // Dispatch an upgradeneeded event with oldVersion=0 so the
+        // production code's first-install branch runs. A real browser
+        // would send a proper IDBVersionChangeEvent; we only read
+        // `oldVersion` off the event, so a plain Event works.
+        const ev = { oldVersion: 0 } as unknown as Event;
+        req.onupgradeneeded?.(ev);
         req.result = lastDb;
         req.onsuccess?.(new Event('success'));
       });

@@ -52,6 +52,14 @@ export interface IDBOpenDBRequestLike {
 export interface IDBDatabaseLike {
   transaction(storeNames: string | string[], mode?: "readonly" | "readwrite"): IDBTransactionLike;
   objectStore(name: string): IDBObjectStoreLike;
+  /**
+   * The set of object store names already in this database. Real
+   * `IDBDatabase` exposes this as a `DOMStringList`; our minimal
+   * adapter uses a `Set<string>` with a `contains` method so the
+   * exists-check is safe on first install (where calling
+   * `objectStore(name)` on a missing store would throw).
+   */
+  objectStoreNames: { contains(name: string): boolean };
   close(): void;
   createObjectStore(name: string, options?: { keyPath?: string }): IDBObjectStoreLike;
 }
@@ -90,10 +98,17 @@ function getDefaultIDB(): IDBFactoryLike | null {
 function openDb(idb: IDBFactoryLike): Promise<IDBDatabaseLike> {
   return new Promise((resolve, reject) => {
     const request = idb.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
+    request.onupgradeneeded = (event) => {
       const db = request.result;
       if (!db) return;
-      if (!db.objectStore(STORE_NAME)) {
+      // `oldVersion === 0` means a fresh install -- the previous schema
+      // did not include this store, so we need to create it. For real
+      // IndexedDB, calling `db.objectStore(name)` on a missing store
+      // throws NotFoundError instead of returning null, which would
+      // abort the versionchange transaction and leave the schema
+      // uncreated. Use the event's oldVersion as the exists-check.
+      const oldVersion = (event as IDBVersionChangeEvent | undefined)?.oldVersion ?? 0;
+      if (oldVersion < DB_VERSION && !db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME, { keyPath: "id" });
       }
     };

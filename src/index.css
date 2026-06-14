@@ -1,3 +1,7 @@
+/* slot-text characters inherit color/line-height from the parent so the
+   roll visually matches the surrounding label without per-cell overrides. */
+@import "slot-text/style.css";
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -160,7 +164,20 @@
     --filtr-compare-position: 50%;
   }
 
+  /* Stacks all main canvases (preview, original, studio) at the
+     same position inside the stage. The stage is `position:
+     relative` (set by tailwind's `relative` class on the JSX),
+     so `absolute inset-0` pins each canvas to the stage's
+     content box. Without this, three block-level canvases
+     would stack vertically in the document flow and the
+     "compare" overlay would not align with the preview
+     underneath. The canvas's CSS `width` / `height` (from the
+     CSS variables) controls its visible size; `absolute`
+     removes it from the document flow so the stage sizes to
+     the largest of the canvases (or to its own max-width /
+     max-height, set inline by the size effect). */
   .filtr-main-canvas {
+    @apply absolute inset-0;
     width: var(--filtr-canvas-width, auto);
     height: var(--filtr-canvas-height, auto);
     image-rendering: var(--filtr-image-rendering, auto);
