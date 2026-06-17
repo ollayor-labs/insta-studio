@@ -30,7 +30,7 @@ import {
 } from "@/lib/imageImport";
 import { readExifFromBlob } from "@/lib/exif";
 import RecentsList from "@/components/RecentsList";
-import type { RecentRecord } from "@/lib/recents";
+import type { RecentMeta } from "@/lib/recents";
 import DropZone from "@/components/DropZone";
 import { formatFileSize } from "@/lib/fileSize";
 import FilterSidebar from "@/components/FilterSidebar";
@@ -90,7 +90,7 @@ const Index = () => {
   // when the dropzone isn't visible.
   const [importingFile, setImportingFile] = useState<{ name: string; size: number } | null>(null);
   const { presets: customPresets, savePreset, removePreset, isReady: customPresetsReady } = useCustomPresets();
-  const { recents, isReady: recentsReady, isSupported: recentsSupported, addRecent, removeRecent, clearRecents } = useRecents();
+  const { recents, isReady: recentsReady, isSupported: recentsSupported, addRecent, removeRecent, clearRecents, getRecentBlob } = useRecents();
   const { favorites, setFavorite, clearFavorite } = useFavorites();
 
   const effectiveViewMode = spaceHeld ? "original" : viewMode;
@@ -120,7 +120,7 @@ const Index = () => {
   // (e.g. ImageCanvas remounting after a layout shift) is safe.
   const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const { filteredImageData, studioImageData, sourceImageData, fullImageData, isProcessing, studioIsProcessing, backendStatus, studioBackendStatus } = useFilter({
+  const { filteredImageData, studioImageData, sourceImageData, fullImageData, getFullImageData, isProcessing, studioIsProcessing, backendStatus, studioBackendStatus } = useFilter({
     image,
     filterName: activeFilter,
     adjustments,
@@ -214,18 +214,28 @@ const Index = () => {
   );
 
   const handleRecentSelect = useCallback(
-    async (record: RecentRecord) => {
+    async (record: RecentMeta) => {
+      // The recents list holds metadata only. Fetch the full
+      // record (with blob and EXIF bytes) on demand so the page
+      // doesn't keep every recent image's source bytes in JS heap.
+      const full = await getRecentBlob(record.id);
+      if (!full) {
+        // The entry was evicted or cleared between the click and
+        // the fetch -- nothing to open. Drop the stale metadata.
+        void removeRecent(record.id);
+        return;
+      }
       try {
-        const { image, blob } = await loadBlobAsImage(record.blob);
-        setCurrentExifBytes(record.exifBytes);
-        handleImageLoad(image, record.name, blob, record.mimeType);
+        const { image, blob } = await loadBlobAsImage(full.blob);
+        setCurrentExifBytes(full.exifBytes);
+        handleImageLoad(image, full.name, blob, full.mimeType);
       } catch {
         // If the stored blob is undecodable (corrupt, unsupported, or the
         // browser revoked the blob), drop it and let the user re-import.
         void removeRecent(record.id);
       }
     },
-    [handleImageLoad, removeRecent],
+    [getRecentBlob, handleImageLoad, removeRecent],
   );
 
   const handleRecentRemove = useCallback(
@@ -697,6 +707,8 @@ const Index = () => {
 
       <BottomBar
         fullImageData={fullImageData}
+        getFullImageData={getFullImageData}
+        hasImage={image !== null}
         filterName={activeFilter}
         filterStrength={filterStrength}
         effectIntensity={effectIntensity}
