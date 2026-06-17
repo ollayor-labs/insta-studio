@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { Copy, Download, ImageDown, Play, SplitSquareVertical, ZoomIn, ZoomOut } from 'lucide-react';
+import { Copy, Download, ImageDown, Play, Redo2, SplitSquareVertical, Undo2, ZoomIn, ZoomOut } from 'lucide-react';
 import { prepareFilterSettings, type Adjustments, type ImageAnalysis } from '@/lib/filterEngine';
 import { renderFilterOnWorker } from '@/lib/filter-worker';
 import { resolveExportExtension, resolveExportMime } from '@/lib/exportFormat';
@@ -46,6 +46,10 @@ interface BottomBarProps {
   zoom: number;
   onZoomChange: (value: number) => void;
   exportSignal: number;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
 }
 
 type RenderCanvas = HTMLCanvasElement | OffscreenCanvas;
@@ -57,6 +61,13 @@ function formatTimestamp(date = new Date()): string {
   const hour = `${date.getHours()}`.padStart(2, '0');
   const minute = `${date.getMinutes()}`.padStart(2, '0');
   return `${year}${month}${day}_${hour}${minute}`;
+}
+
+function isMacPlatform(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const platform = navigator.platform ?? '';
+  const userAgent = navigator.userAgent ?? '';
+  return /Mac|iPhone|iPad|iPod/.test(platform) || /Mac OS X/.test(userAgent);
 }
 
 function createExportName(filterName: string, format: ExportFormat, sourceMimeType: string | null = null): string {
@@ -239,6 +250,10 @@ const BottomBar: React.FC<BottomBarProps> = ({
   zoom,
   onZoomChange,
   exportSignal,
+  canUndo,
+  canRedo,
+  onUndo,
+  onRedo,
 }) => {
   const [quality, setQuality] = useState(95);
   const [size, setSize] = useState<ExportSize>('original');
@@ -393,6 +408,30 @@ const BottomBar: React.FC<BottomBarProps> = ({
         <span className="font-mono-ui text-[10px] text-muted-foreground uppercase tracking-[0.14em]">
           {viewMode === 'edited' ? 'B · Adaptive' : viewMode === 'original' ? 'A · Original' : 'C · Studio'}
         </span>
+
+        <button
+          onClick={onUndo}
+          disabled={!canUndo}
+          aria-label="Undo"
+          title={isMacPlatform() ? 'Undo (⌘Z)' : 'Undo (Ctrl+Z)'}
+          data-testid="undo-button"
+          className="flex items-center gap-1.5 font-mono-ui text-[11px] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
+        >
+          <Undo2 className="w-3.5 h-3.5" />
+          Undo
+        </button>
+
+        <button
+          onClick={onRedo}
+          disabled={!canRedo}
+          aria-label="Redo"
+          title={isMacPlatform() ? 'Redo (⇧⌘Z)' : 'Redo (Ctrl+Shift+Z)'}
+          data-testid="redo-button"
+          className="flex items-center gap-1.5 font-mono-ui text-[11px] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
+        >
+          <Redo2 className="w-3.5 h-3.5" />
+          Redo
+        </button>
 
         <button
           onClick={() => onCompareModeChange(!compareMode)}

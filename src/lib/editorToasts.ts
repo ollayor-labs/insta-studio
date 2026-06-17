@@ -50,3 +50,19 @@ export function showImageDecodeFailedToast() {
     description: "The selected image could not be decoded.",
   });
 }
+
+export function showUndoToast(label: string | null) {
+  toast({
+    title: "Undone",
+    description: label ?? undefined,
+    duration: 1500,
+  });
+}
+
+export function showRedoToast(label: string | null) {
+  toast({
+    title: "Redone",
+    description: label ?? undefined,
+    duration: 1500,
+  });
+}

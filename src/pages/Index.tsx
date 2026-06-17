@@ -14,6 +14,8 @@ import {
   showFilterChangedToast,
   showHeicConversionFailedToast,
   showImageDecodeFailedToast,
+  showRedoToast,
+  showUndoToast,
   showUnsupportedImageToast,
 } from "@/lib/editorToasts";
 import { PREVIEW_MAX_DIMENSION, useFilter } from "@/hooks/useFilter";
@@ -21,6 +23,7 @@ import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
 import { useRecents } from "@/hooks/useRecents";
 import { useFavorites } from "@/hooks/useFavorites";
+import { useHistory, type EditorSnapshot } from "@/hooks/useHistory";
 import { FAVORITE_SLOTS, getFilterPresetById, type FavoriteSlot, type FavoritesMap } from "@/lib/filterEngine";
 import {
   ImageImportError,
@@ -52,13 +55,32 @@ const ImageCanvas = React.memo(RawImageCanvas);
 const AdjustmentsPanel = React.memo(RawAdjustmentsPanel);
 const brandMarkSrc = "/brand/logo-mark.png";
 
+const TEXT_INPUT_TYPES = new Set([
+  "text",
+  "search",
+  "email",
+  "url",
+  "tel",
+  "password",
+  "number",
+  "date",
+  "datetime-local",
+  "month",
+  "week",
+  "time",
+]);
+
 function isTypingTarget(target: EventTarget | null): boolean {
-  return (
-    target instanceof HTMLInputElement ||
-    target instanceof HTMLTextAreaElement ||
-    target instanceof HTMLSelectElement ||
-    Boolean(target instanceof HTMLElement && target.isContentEditable)
-  );
+  if (target instanceof HTMLTextAreaElement) return true;
+  if (target instanceof HTMLSelectElement) return true;
+  if (target instanceof HTMLElement && target.isContentEditable) return true;
+  if (target instanceof HTMLInputElement) {
+    // Only block on inputs that actually accept text. Range,
+    // checkbox, radio, color, file, button etc. should not eat
+    // keyboard shortcuts like Cmd+Z.
+    return TEXT_INPUT_TYPES.has(target.type);
+  }
+  return false;
 }
 
 const Index = () => {
@@ -66,10 +88,82 @@ const Index = () => {
   const [fileName, setFileName] = useState("");
   const [sourceMimeType, setSourceMimeType] = useState<string | null>(null);
   const [currentExifBytes, setCurrentExifBytes] = useState<Uint8Array | null>(null);
-  const [activeFilter, setActiveFilter] = useState("Original");
-  const [filterStrength, setFilterStrength] = useState(100);
-  const [effectIntensity, setEffectIntensity] = useState(100);
-  const [adjustments, setAdjustments] = useState<Adjustments>({ ...defaultAdjustments });
+  const initialSnapshot: EditorSnapshot = {
+    activeFilter: "Original",
+    filterStrength: 100,
+    effectIntensity: 100,
+    adjustments: { ...defaultAdjustments },
+  };
+  const {
+    state,
+    canUndo,
+    canRedo,
+    past,
+    future,
+    apply,
+    beginInteraction,
+    setDuringInteraction,
+    commitInteraction,
+    undo,
+    redo,
+    reset: resetHistory,
+  } = useHistory(initialSnapshot);
+  const { activeFilter, filterStrength, effectIntensity, adjustments } = state;
+
+  const startAdjustmentDrag = useCallback(
+    (kind: "strength" | "intensity" | "adjustment", key?: keyof Adjustments) => {
+      if (dragInProgressRef.current) return;
+      dragInProgressRef.current = { kind, key };
+      beginInteraction();
+    },
+    [beginInteraction],
+  );
+
+  const endAdjustmentDrag = useCallback(() => {
+    const drag = dragInProgressRef.current;
+    if (!drag) return;
+    dragInProgressRef.current = null;
+    const label =
+      drag.kind === "strength"
+        ? "Edit: Strength"
+        : drag.kind === "intensity"
+          ? "Edit: Effect Intensity"
+          : `Edit: ${drag.key ?? "Adjustment"}`;
+    commitInteraction(label, drag.kind === "adjustment" ? "adjustment" : drag.kind);
+  }, [commitInteraction]);
+
+  const handleAdjustmentChange = useCallback(
+    (key: keyof Adjustments, value: number) => {
+      if (!dragInProgressRef.current) {
+        // Keyboard nudges and the very first programmatic change start a
+        // drag automatically so each keyboard step still records a
+        // history entry on release.
+        startAdjustmentDrag("adjustment", key);
+      }
+      setDuringInteraction({ ...state, adjustments: { ...state.adjustments, [key]: value } });
+    },
+    [state, setDuringInteraction, startAdjustmentDrag],
+  );
+
+  const setFilterStrength = useCallback(
+    (value: number) => {
+      if (!dragInProgressRef.current) {
+        startAdjustmentDrag("strength");
+      }
+      setDuringInteraction({ ...state, filterStrength: value });
+    },
+    [state, setDuringInteraction, startAdjustmentDrag],
+  );
+
+  const setEffectIntensity = useCallback(
+    (value: number) => {
+      if (!dragInProgressRef.current) {
+        startAdjustmentDrag("intensity");
+      }
+      setDuringInteraction({ ...state, effectIntensity: value });
+    },
+    [state, setDuringInteraction, startAdjustmentDrag],
+  );
   const [imageAnalysis, setImageAnalysis] = useState<ReturnType<typeof analyzeImageData> | null>(null);
   const [recommendations, setRecommendations] = useState<PresetRecommendation[]>([]);
   const [viewMode, setViewMode] = useState<"edited" | "original" | "studio">("edited");
@@ -80,6 +174,9 @@ const Index = () => {
   const compareRevealRafRef = useRef<number>(0);
   const compareRevealStartedAtRef = useRef<number>(0);
   const animationSourceRef = useRef(false);
+  // Tracks the most recent slider drag so a window-level pointerup / keyup
+  // can commit a single history entry per drag instead of one per tick.
+  const dragInProgressRef = useRef<null | { kind: "strength" | "intensity" | "adjustment"; key?: keyof Adjustments }>(null);
   const [zoom, setZoom] = useState(100);
   const [exportSignal, setExportSignal] = useState(0);
   const [sceneMode, setSceneMode] = useState<"adaptive" | "studio">("adaptive");
@@ -155,10 +252,22 @@ const Index = () => {
       // Cmd+V handler in `startImport`).
       setImportingFile(null);
       setCurrentExifBytes(null);
-      setActiveFilter("Original");
-      setFilterStrength(100);
-      setEffectIntensity(100);
-      setAdjustments({ ...defaultAdjustments });
+      apply(
+        {
+          activeFilter: "Original",
+          filterStrength: 100,
+          effectIntensity: 100,
+          adjustments: { ...defaultAdjustments },
+        },
+        "Image loaded",
+        "image-load",
+      );
+      resetHistory({
+        activeFilter: "Original",
+        filterStrength: 100,
+        effectIntensity: 100,
+        adjustments: { ...defaultAdjustments },
+      });
       setViewMode("edited");
       setCompareMode(false);
       setComparePosition(50);
@@ -178,7 +287,7 @@ const Index = () => {
         await addRecent({ name, mimeType, blob, exifBytes });
       })().catch(() => {});
     },
-    [addRecent, setImportingFile],
+    [addRecent, apply, resetHistory, setImportingFile],
   );
 
   
@@ -268,28 +377,43 @@ const Index = () => {
     [clearFavorite, favorites, setFavorite],
   );
 
-  const handleAdjustmentChange = useCallback((key: keyof Adjustments, value: number) => {
-    setAdjustments((previous) => ({ ...previous, [key]: value }));
-  }, []);
+
 
   const handleReset = useCallback(() => {
     const preset = getFilterPresetByNameWithCustom(activeFilter, customPresets);
-    setAdjustments({ ...defaultAdjustments });
-    setFilterStrength(Math.round(preset.defaultStrength * 100));
-    setEffectIntensity(100);
-  }, [activeFilter, customPresets]);
+    apply(
+      {
+        ...state,
+        adjustments: { ...defaultAdjustments },
+        filterStrength: Math.round(preset.defaultStrength * 100),
+        effectIntensity: 100,
+      },
+      "Reset adjustments",
+      "reset",
+    );
+  }, [activeFilter, customPresets, apply, state]);
 
-  const handleFilterChange = useCallback((name: string) => {
-    const preset = getFilterPresetByNameWithCustom(name, customPresets);
-    startTransition(() => {
-      setActiveFilter(name);
-      setFilterStrength(Math.round(preset.defaultStrength * 100));
-      setEffectIntensity(100);
-      setAdjustments({ ...defaultAdjustments });
-      setCompareMode(false);
-    });
-    showFilterChangedToast(name, Math.round(preset.defaultStrength * 100));
-  }, [customPresets]);
+  const handleFilterChange = useCallback(
+    (name: string) => {
+      const preset = getFilterPresetByNameWithCustom(name, customPresets);
+      const strength = Math.round(preset.defaultStrength * 100);
+      apply(
+        {
+          activeFilter: name,
+          filterStrength: strength,
+          effectIntensity: 100,
+          adjustments: { ...defaultAdjustments },
+        },
+        `Applied: ${name}`,
+        "preset-change",
+      );
+      startTransition(() => {
+        setCompareMode(false);
+      });
+      showFilterChangedToast(name, strength);
+    },
+    [customPresets, apply],
+  );
 
   const handleActivateFavorite = useCallback(
     (slot: FavoriteSlot) => {
@@ -304,6 +428,23 @@ const Index = () => {
     },
     [favorites, handleFilterChange],
   );
+
+  // Wrap the history undo/redo so they also fire a small toast
+  // showing what was undone / redone. The label comes from the
+  // most recent history entry (the one that was just consumed).
+  const handleUndo = useCallback(() => {
+    if (!canUndo) return;
+    const label = past[past.length - 1]?.label ?? null;
+    undo();
+    showUndoToast(label);
+  }, [canUndo, past, undo]);
+
+  const handleRedo = useCallback(() => {
+    if (!canRedo) return;
+    const label = future[future.length - 1]?.label ?? null;
+    redo();
+    showRedoToast(label);
+  }, [canRedo, future, redo]);
 
   const handlePlayReveal = useCallback(() => {
     if (!image) return;
@@ -350,14 +491,23 @@ const Index = () => {
         adjustments,
         note: undefined,
       });
+      apply(
+        {
+          activeFilter: record.name,
+          filterStrength: Math.round(record.strength * 100),
+          effectIntensity: 100,
+          adjustments: { ...defaultAdjustments },
+        },
+        `Saved preset: ${record.name}`,
+        "preset-change",
+      );
       startTransition(() => {
-        setActiveFilter(record.name);
         setViewMode("edited");
         setCompareMode(false);
       });
       showFilterChangedToast(record.name, Math.round(record.strength * 100));
     },
-    [activePreset.id, activePreset.defaultStrength, adjustments, savePreset],
+    [activePreset.id, activePreset.defaultStrength, adjustments, savePreset, apply],
   );
 
   const handleDeleteCustomPreset = useCallback(
@@ -365,13 +515,19 @@ const Index = () => {
       removePreset(presetId);
       const record = customPresets.find((entry) => entry.id === presetId);
       if (record && activeFilter === record.name) {
-        setActiveFilter("Original");
-        setAdjustments({ ...defaultAdjustments });
-        setFilterStrength(100);
-        setEffectIntensity(100);
+        apply(
+          {
+            activeFilter: "Original",
+            filterStrength: 100,
+            effectIntensity: 100,
+            adjustments: { ...defaultAdjustments },
+          },
+          "Preset deleted",
+          "preset-change",
+        );
       }
     },
-    [activeFilter, customPresets, removePreset],
+    [activeFilter, customPresets, removePreset, apply],
   );
 
   const cycleFilter = useCallback(
@@ -483,6 +639,34 @@ const Index = () => {
     return () => window.removeEventListener("paste", handleWindowPaste);
   }, [image, startImport]);
 
+  // Commit any in-flight slider drag when the user releases the
+  // pointer or the keyboard. The drag is also auto-committed on
+  // touchcancel / blur so we never strand a `beginInteraction`
+  // without a matching `commitInteraction`.
+  useEffect(() => {
+    const commit = () => endAdjustmentDrag();
+    window.addEventListener("pointerup", commit);
+    window.addEventListener("pointercancel", commit);
+    window.addEventListener("blur", commit);
+    return () => {
+      window.removeEventListener("pointerup", commit);
+      window.removeEventListener("pointercancel", commit);
+      window.removeEventListener("blur", commit);
+    };
+  }, [endAdjustmentDrag]);
+
+  // Same idea for keyboard: end the drag on keyup so a single
+  // history entry covers the whole keypress (and any auto-repeat).
+  useEffect(() => {
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "ArrowUp" || event.key === "ArrowDown" || event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        endAdjustmentDrag();
+      }
+    };
+    window.addEventListener("keyup", onKeyUp);
+    return () => window.removeEventListener("keyup", onKeyUp);
+  }, [endAdjustmentDrag]);
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (isTypingTarget(event.target)) return;
@@ -517,6 +701,24 @@ const Index = () => {
         return;
       }
 
+      // Undo / Redo. Cmd+Z (or Ctrl+Z on non-Mac) undoes; Shift adds redo.
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        if (event.shiftKey) {
+          handleRedo();
+        } else {
+          handleUndo();
+        }
+        return;
+      }
+      // Ctrl+Y is the Windows redo shortcut. We don't fire it on Mac
+      // because Cmd+Y is reserved by the browser.
+      if (event.ctrlKey && !event.metaKey && event.key.toLowerCase() === "y") {
+        event.preventDefault();
+        handleRedo();
+        return;
+      }
+
       if (event.key.toLowerCase() === "c" && event.shiftKey) {
         event.preventDefault();
         handlePlayReveal();
@@ -547,7 +749,7 @@ const Index = () => {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [cycleFilter, favorites, handleActivateFavorite, handlePlayReveal, handleReset]);
+  }, [cycleFilter, favorites, handleActivateFavorite, handlePlayReveal, handleRedo, handleReset, handleUndo]);
 
   if (!image) {
     return (
@@ -726,6 +928,10 @@ const Index = () => {
         zoom={zoom}
         onZoomChange={setZoom}
         exportSignal={exportSignal}
+        canUndo={canUndo}
+        canRedo={canRedo}
+        onUndo={handleUndo}
+        onRedo={handleRedo}
       />
     </div>
   );
