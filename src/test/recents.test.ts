@@ -19,6 +19,7 @@ interface Row {
   size: number;
   addedAt: number;
   blob: Blob;
+  thumbnail?: Blob | null;
 }
 
 class FakeStore implements IDBObjectStoreLike {
@@ -245,14 +246,17 @@ describe('recents storage', () => {
     const payload = blob('hello-world', 'image/png');
     const record = await storage.add({ name: 'x.png', mimeType: 'image/png', blob: payload, exifBytes: null });
 
-    // list() returns metadata only -- the full bytes are NOT
-    // included so the recents UI doesn't hold a dozen blobs in
-    // memory. Use getById() to fetch the full record.
+    // list() returns metadata (+ optional thumbnail) -- the full
+    // source bytes are NOT included so the recents UI doesn't hold a
+    // dozen source blobs in memory. Use getById() to fetch the
+    // full record.
     const list = await storage.list();
     const found = list.find((r) => r.id === record.id);
     expect(found).toBeDefined();
-    // Metadata-only shape: no blob / exifBytes on the listed entry.
+    // Metadata-only shape for the heavy fields: no blob / exifBytes
+    // on the listed entry.
     expect((found as unknown as { blob?: unknown }).blob).toBeUndefined();
+    expect((found as unknown as { exifBytes?: unknown }).exifBytes).toBeUndefined();
 
     const full = await storage.getById(record.id);
     expect(full).not.toBeNull();
@@ -262,7 +266,7 @@ describe('recents storage', () => {
     expect(text).toBe('hello-world');
   });
 
-  it('list() returns metadata only (no blob, no exifBytes)', async () => {
+  it('list() returns metadata + thumbnail (no blob, no exifBytes)', async () => {
     const factory = makeFactory();
     const storage = createRecentsStorage(factory)!;
     await storage.add({
@@ -277,9 +281,27 @@ describe('recents storage', () => {
     const entry = list[0] as unknown as Record<string, unknown>;
     expect(entry.blob).toBeUndefined();
     expect(entry.exifBytes).toBeUndefined();
-    // The metadata fields are present.
+    // The metadata fields are present. The thumbnail slot is part
+    // of the list shape (so the UI can render previews without
+    // holding full source bytes); it's null when the thumbnailer
+    // couldn't produce one (e.g. in jsdom, which can't decode
+    // images or run canvas.toBlob).
     expect(entry.name).toBe('a.jpg');
     expect(entry.mimeType).toBe('image/jpeg');
+    expect('thumbnail' in entry).toBe(true);
+  });
+
+  it('list() keeps the thumbnail slot for backwards compat with rows persisted before thumbnails existed', async () => {
+    const factory = makeFactory();
+    const storage = createRecentsStorage(factory)!;
+    // Simulate a row written by an older build that did not store a
+    // thumbnail. The projection should still surface the field as
+    // null so the UI can render a placeholder rather than crashing
+    // on `record.thumbnail.size` or similar.
+    await storage.add({ name: 'legacy.jpg', mimeType: 'image/jpeg', blob: blob('legacy'), exifBytes: null });
+
+    const list = await storage.list();
+    expect(list[0].thumbnail).toBeNull();
   });
 
   it('getById returns null for unknown ids', async () => {

@@ -3,6 +3,7 @@
 // code uses `globalThis.indexedDB` via `getDefaultIDB()`. All public
 // functions are async and return plain JS values (the storage shape never
 // leaks IndexedDB-specific types).
+import { createThumbnail } from "@/lib/thumbnail";
 
 const DB_NAME = "filtr-studio";
 const DB_VERSION = 1;
@@ -12,7 +13,7 @@ const MAX_RECENTS = 12;
 /**
  * Lightweight metadata for a recent image. The list call returns
  * this shape -- no `blob`, no `exifBytes` -- so the recents UI can
- * render thumbnails-by-extension and the page can hold 12 entries
+ * render a small thumbnail preview and the page can hold 12 entries
  * resident in JS heap without materialising tens of MB of image
  * bytes. Use `getById(id)` to fetch the full record on demand.
  */
@@ -22,6 +23,17 @@ export interface RecentMeta {
   mimeType: string;
   size: number;
   addedAt: number;
+  /**
+   * Tiny preview image used to render the recents tile. Typically a
+   * 128px-on-the-long-edge JPEG in the single-digit KB range. Kept on
+   * the list shape (unlike `blob` and `exifBytes`) so the UI can show
+   * a real preview without paying the cost of holding twelve full-
+   * resolution source blobs in JS heap. Optional for backwards
+   * compatibility: older records persisted before thumbnails were
+   * added may not have one, in which case the UI falls back to a
+   * file-extension placeholder.
+   */
+  thumbnail: Blob | null;
 }
 
 /**
@@ -147,7 +159,10 @@ function generateId(): string {
   return `r-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function makeRecord(input: { name: string; mimeType: string; blob: Blob; exifBytes: Uint8Array | null }): RecentRecord {
+function makeRecord(
+  input: { name: string; mimeType: string; blob: Blob; exifBytes: Uint8Array | null },
+  thumbnail: Blob | null,
+): RecentRecord {
   return {
     id: generateId(),
     name: input.name,
@@ -156,16 +171,18 @@ function makeRecord(input: { name: string; mimeType: string; blob: Blob; exifByt
     addedAt: Date.now(),
     blob: input.blob,
     exifBytes: input.exifBytes,
+    thumbnail,
   };
 }
 
 /**
- * Project a stored row down to the metadata-only shape returned by
- * `list()`. Centralised so a future column added to `RecentRecord`
- * is also omitted from the list projection -- the previous shape
- * had the `blob` field on the same type as the stored row, which
- * meant every consumer held the full bytes in memory. Stripping
- * `blob` / `exifBytes` here is what buys the RAM win.
+ * Project a stored row down to the list shape. Centralised so a
+ * future column added to `RecentRecord` is also omitted from the list
+ * projection -- the previous shape had the `blob` field on the same
+ * type as the stored row, which meant every consumer held the full
+ * bytes in memory. `thumbnail` is the one exception: it's small
+ * enough to hold in JS heap safely (and required for the recents UI
+ * to render real previews) so we keep it on the projected shape.
  */
 function toMeta(row: RecentRecordRow): RecentMeta {
   return {
@@ -174,17 +191,18 @@ function toMeta(row: RecentRecordRow): RecentMeta {
     mimeType: row.mimeType,
     size: row.size,
     addedAt: row.addedAt,
+    thumbnail: row.thumbnail ?? null,
   };
 }
 
 export interface RecentsStorage {
   add(input: { name: string; mimeType: string; blob: Blob; exifBytes: Uint8Array | null }): Promise<RecentRecord>;
   /**
-   * Returns metadata only (`RecentMeta[]`). The full source bytes
-   * are NOT included -- callers should call `getById(id)` to fetch
-   * the bytes for a specific entry on demand. This is the main
-   * memory win: the recents UI no longer holds 12 full-resolution
-   * `Blob` instances resident in JS heap.
+   * Returns metadata + thumbnail shape. The full source bytes are
+   * NOT included -- callers should call `getById(id)` to fetch the
+   * bytes for a specific entry on demand. This is the main memory
+   * win: the recents UI does not hold 12 full-resolution `Blob`
+   * instances resident in JS heap.
    */
   list(): Promise<RecentMeta[]>;
   /**
@@ -209,7 +227,13 @@ export function createRecentsStorage(idb: IDBFactoryLike | null = getDefaultIDB(
 
   async function add(input: { name: string; mimeType: string; blob: Blob; exifBytes: Uint8Array | null }): Promise<RecentRecord> {
     const db = await getDb();
-    const record = makeRecord(input);
+    // Generate the thumbnail off the add() critical path's input but
+    // before the IDB write so the record carries a preview in one
+    // round trip. createThumbnail() swallows its own errors and
+    // returns null on failure, so a decode problem in the thumbnail
+    // path never blocks persisting the source.
+    const thumbnail = await createThumbnail(input.blob);
+    const record = makeRecord(input, thumbnail);
     // Add the new record first so a failure during eviction doesn't lose
     // the user's current image.
     await withStore(db, "readwrite", (store) => store.add(record as RecentRecordRow));
@@ -227,12 +251,10 @@ export function createRecentsStorage(idb: IDBFactoryLike | null = getDefaultIDB(
   }
   async function list(): Promise<RecentMeta[]> {
     const db = await getDb();
-    // `getAll` returns the full rows; we project down to metadata
-    // before crossing the storage boundary so the caller never sees
-    // the `blob` / `exifBytes` fields. The full bytes are still in
-    // the IDB result buffer, so this projection is the single most
-    // important line for memory: it stops the JS heap from holding
-    // all twelve blobs in `recents` state.
+    // Project rows down to the metadata + thumbnail shape. We keep
+    // `thumbnail` (small, capped at ~128px JPEG) and drop the full
+    // `blob` / `exifBytes` so the JS heap never holds all twelve
+    // source images at once.
     const rows = (await withStore<RecentRecordRow[]>(db, "readonly", (store) => store.getAll())) as RecentRecordRow[];
     return rows
       .slice()

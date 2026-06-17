@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Clock, Trash2, X } from "lucide-react";
 import type { RecentMeta } from "@/lib/recents";
 
@@ -30,6 +30,36 @@ const RecentsList: React.FC<RecentsListProps> = ({ recents, isReady, onSelect, o
     return () => window.clearInterval(interval);
   }, []);
 
+  // Build a per-id object URL for each thumbnail. The thumbnail blob is
+  // small (~128px JPEG) so a dozen object URLs is cheap. We recreate the
+  // map whenever the recents array changes (a new import, a remove, or
+  // a clear) and revoke the old URLs on cleanup so we never leak them
+  // across renders. Records without a thumbnail (older entries
+  // persisted before thumbnails were added) just don't get a key in
+  // the map and the row falls back to the file-extension placeholder.
+  const objectUrls = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const record of recents) {
+      if (!record.thumbnail) continue;
+      try {
+        map.set(record.id, URL.createObjectURL(record.thumbnail));
+      } catch {
+        // Some test environments (or locked-down browsers) reject
+        // createObjectURL; the row just won't have a thumbnail in
+        // that case.
+      }
+    }
+    return map;
+  }, [recents]);
+
+  useEffect(() => {
+    return () => {
+      for (const url of objectUrls.values()) {
+        URL.revokeObjectURL(url);
+      }
+    };
+  }, [objectUrls]);
+
   if (!isReady) return null;
   if (recents.length === 0) return null;
 
@@ -51,6 +81,7 @@ const RecentsList: React.FC<RecentsListProps> = ({ recents, isReady, onSelect, o
       </div>
       <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
         {recents.map((record) => {
+          const url = objectUrls.get(record.id);
           return (
             <div
               key={record.id}
@@ -63,19 +94,19 @@ const RecentsList: React.FC<RecentsListProps> = ({ recents, isReady, onSelect, o
                 title={`${record.name} \u00b7 ${formatRelativeTime(record.addedAt, now)}`}
                 aria-label={`Open ${record.name}`}
               >
-                {/*
-                  No thumbnail: the recents list no longer holds the
-                  full source blob, so we can't `URL.createObjectURL`
-                  here. The placeholder below shows the file extension
-                  and file size so the user can still tell entries
-                  apart at a glance. (A follow-up could store a tiny
-                  thumbnail blob alongside the source in IDB if
-                  thumbnails turn out to be essential.)
-                */}
-                <div className="flex h-full w-full flex-col items-center justify-center gap-1 font-mono-ui text-[10px] text-muted-foreground/70 uppercase">
-                  <span>{record.name.split(".").pop() ?? ""}</span>
-                  <span className="opacity-60">{(record.size / 1024).toFixed(0)} KB</span>
-                </div>
+                {url ? (
+                  <img
+                    src={url}
+                    alt=""
+                    className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-105"
+                    draggable={false}
+                  />
+                ) : (
+                  <div className="flex h-full w-full flex-col items-center justify-center gap-1 font-mono-ui text-[10px] text-muted-foreground/70 uppercase">
+                    <span>{record.name.split(".").pop() ?? ""}</span>
+                    <span className="opacity-60">{(record.size / 1024).toFixed(0)} KB</span>
+                  </div>
+                )}
                 <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/70 to-transparent p-2">
                   <div className="truncate text-left font-mono-ui text-[10px] text-white">
                     {record.name}
