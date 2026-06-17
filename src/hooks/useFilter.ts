@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createImageDataFromImage,
   type Adjustments,
@@ -79,11 +79,6 @@ interface UseFilterArgs {
   studioCanvasRef?: { current: HTMLCanvasElement | null };
 }
 
-interface RasterCache {
-  full: ImageData | null;
-  preview: ImageData | null;
-}
-
 export function useFilter({
   image,
   filterName,
@@ -97,7 +92,28 @@ export function useFilter({
   previewCanvasRef,
   studioCanvasRef,
 }: UseFilterArgs) {
-  const [rasters, setRasters] = useState<RasterCache>({ full: null, preview: null });
+  // The preview raster stays in React state so the live preview's
+  // effect can read it as a dep. The full-resolution raster is
+  // lazily materialized on first use (typically the first export
+  // click) and cached in a ref so the JS heap doesn't have to hold
+  // ~48 MB of `Uint8ClampedArray` for every 12 MP image from the
+  // moment the user imports it. The previous design allocated it
+  // on image load and never freed it -- a real cost for any photo
+  // larger than a few megapixels.
+  const [previewRaster, setPreviewRaster] = useState<ImageData | null>(null);
+  const fullRasterRef = useRef<ImageData | null>(null);
+  const fullRasterImageRef = useRef<HTMLImageElement | null>(null);
+  const [fullRaster, setFullRaster] = useState<ImageData | null>(null);
+  // Bumped when the lazy full raster is materialized / replaced, so
+  // effects that *do* want the full-res render (the live preview
+  // when `useFullResolution` is true) can re-derive their memo when
+  // the raster arrives. Without this, the first preview render on
+  // a fresh image uses the preview raster and never re-runs once
+  // the full raster materializes. The `useEffect`s that read the
+  // ref via `sourceImageData` handle the live preview path -- this
+  // counter is for any consumer that explicitly waits on the full
+  // raster (none today, but it's a one-line opt-in).
+  const fullRasterVersionRef = useRef(0);
   const [filteredImageData, setFilteredImageData] = useState<ImageData | null>(null);
   const [studioImageData, setStudioImageData] = useState<ImageData | null>(null);
   // Adaptive + studio renders track their own processing state so the
@@ -134,22 +150,61 @@ export function useFilter({
 
   useEffect(() => {
     if (!image) {
-      setRasters({ full: null, preview: null });
+      // Drop both rasters and the cached full-res ImageData. The
+      // ref must be cleared too -- otherwise switching to a new
+      // image and then back could surface the old photo's bytes.
+      setPreviewRaster(null);
+      fullRasterRef.current = null;
+      fullRasterImageRef.current = null;
+      setFullRaster(null);
       setFilteredImageData(null);
       setStudioImageData(null);
       return;
     }
 
     setStudioImageData(null);
-    setRasters({
-      full: createImageDataFromImage(image),
-      preview: createImageDataFromImage(image, PREVIEW_MAX_DIMENSION),
-    });
+    setPreviewRaster(createImageDataFromImage(image, PREVIEW_MAX_DIMENSION));
   }, [image]);
 
+  /**
+   * Lazily materialize the full-resolution `ImageData` for the
+   * current image. Returns the cached value if the image hasn't
+   * changed since the last call. The first call pays the full
+   * pixel-copy cost; subsequent calls are O(1). Consumers (the
+   * export pipeline) should call this inside an `async` handler
+   * -- the function returns synchronously today, but a future
+   * off-thread decode would make it async and we don't want the
+   * export call site to have to change again.
+   *
+   * Memory: the resulting `ImageData` is cached in `fullRasterRef`
+   * and `fullRaster` (state) for the lifetime of the current
+   * image. When the user imports a new image, both are cleared in
+   * the `image`-effect above so the previous photo's bytes become
+   * GC-eligible.
+   */
+  const getFullImageData = useCallback((): ImageData | null => {
+    if (!image) return null;
+    if (fullRasterImageRef.current === image && fullRasterRef.current) {
+      return fullRasterRef.current;
+    }
+    const raster = createImageDataFromImage(image);
+    fullRasterRef.current = raster;
+    fullRasterImageRef.current = image;
+    fullRasterVersionRef.current += 1;
+    setFullRaster(raster);
+    return raster;
+  }, [image]);
+
+  // The live preview's source raster. If `useFullResolution` is
+  // requested and the lazy full raster is available, use it;
+  // otherwise fall back to the preview raster. This is the live
+  // preview path -- the on-screen canvas is capped at 1200x800
+  // regardless, so the fallback is visually identical for the
+  // slider feel, just slightly lower-quality for some filter
+  // passes (e.g. bloom) until the full raster materializes.
   const sourceImageData = useMemo(
-    () => (useFullResolution ? rasters.full : rasters.preview),
-    [rasters.full, rasters.preview, useFullResolution],
+    () => (useFullResolution && fullRaster ? fullRaster : previewRaster),
+    [fullRaster, previewRaster, useFullResolution],
   );
 
   // Shared inputs to `prepareFilterSettings` for both the studio
@@ -333,8 +388,9 @@ export function useFilter({
   return {
     filteredImageData,
     studioImageData,
-    fullImageData: rasters.full,
-    previewImageData: rasters.preview,
+    fullImageData: fullRaster,
+    getFullImageData,
+    previewImageData: previewRaster,
     sourceImageData,
     isProcessing: isProcessing || studioIsProcessing,
     studioIsProcessing,

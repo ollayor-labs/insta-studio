@@ -11,7 +11,24 @@ type ExportSize = 'original' | '2x' | '50%';
 type ExportFormat = 'jpeg' | 'png' | 'webp' | 'original';
 
 interface BottomBarProps {
+  /**
+   * The full-resolution raster, if already materialized by another
+   * consumer (typically the live preview at `useFullResolution`).
+   * May be `null` even when the user is editing -- the full raster
+   * is now lazy (see `useFilter`'s `getFullImageData`). Use
+   * `getFullImageData` from props to materialize it on demand at
+   * export time. The export call awaits this so the user only pays
+   * the ~48 MB allocation on the click that needs it, not on import.
+   */
   fullImageData: ImageData | null;
+  getFullImageData: () => ImageData | null;
+  /**
+   * True once the user has loaded any image. The Reveal button
+   * gates on this, not on `fullImageData` -- the auto-reveal
+   * animation runs against the live preview, which only needs the
+   * preview raster to be ready.
+   */
+  hasImage: boolean;
   filterName: string;
   filterStrength: number;
   effectIntensity: number;
@@ -203,6 +220,8 @@ function resampleCanvas(source: RenderCanvas, size: ExportSize): RenderCanvas {
 
 const BottomBar: React.FC<BottomBarProps> = ({
   fullImageData,
+  getFullImageData,
+  hasImage,
   filterName,
   filterStrength,
   effectIntensity,
@@ -230,7 +249,13 @@ const BottomBar: React.FC<BottomBarProps> = ({
 
   const renderExportBlob = useCallback(
     async (targetFormat: ExportFormat, targetSize: ExportSize, targetQuality: number, withWatermark: boolean) => {
-      if (!fullImageData) return null;
+      // The full-resolution raster is now lazy. The hook
+      // materializes it on first call and caches it for the
+      // lifetime of the current image; the second export reuses
+      // the same `ImageData` (no re-allocation). The first call
+      // pays the cost; the rest of the session doesn't.
+      const fullRaster = fullImageData ?? getFullImageData();
+      if (!fullRaster) return null;
 
       setExporting(true);
 
@@ -252,7 +277,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
           analysis ?? undefined,
         );
 
-        const filtered = await renderFilterOnWorker(fullImageData, settings);
+        const filtered = await renderFilterOnWorker(fullRaster, settings);
         // Apply EXIF orientation to the rendered pixels so a portrait-
         // orientation phone photo comes out the right way up. The
         // metadata re-injection below still tags the file with the
@@ -290,6 +315,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
       filterName,
       filterStrength,
       fullImageData,
+      getFullImageData,
       sourceMimeType,
     ],
   );
@@ -380,7 +406,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
 
         <button
           onClick={onPlayReveal}
-          disabled={!fullImageData}
+          disabled={!hasImage}
           className={`flex items-center gap-1.5 font-mono-ui text-[11px] transition-colors ${
             compareReveal === 'playing'
               ? 'text-primary'

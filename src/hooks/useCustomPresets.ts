@@ -7,6 +7,7 @@ import {
   type Adjustments,
   type CustomPresetRecord,
 } from "@/lib/filterEngine";
+import { notifyStorageChanged, useStorageBusVersion } from "@/hooks/useStorageBus";
 
 interface UseCustomPresets {
   presets: CustomPresetRecord[];
@@ -21,30 +22,18 @@ interface UseCustomPresets {
   isReady: boolean;
 }
 
-const STORAGE_EVENT = "filtr:custom-presets-changed";
-
 export function useCustomPresets(): UseCustomPresets {
-  const [presets, setPresets] = useState<CustomPresetRecord[]>([]);
+  // See `useFavorites` for the bus pattern. Initial state is read
+  // synchronously so the editor's first render already sees saved
+  // presets; the effect below re-reads on any bus event.
+  const [presets, setPresets] = useState<CustomPresetRecord[]>(() => loadCustomPresets());
   const [isReady, setIsReady] = useState(false);
+  const version = useStorageBusVersion();
 
   useEffect(() => {
     setPresets(loadCustomPresets());
     setIsReady(true);
-
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === "filtr.custom-presets") {
-        setPresets(loadCustomPresets());
-      }
-    };
-    const handleInternal = () => setPresets(loadCustomPresets());
-
-    window.addEventListener("storage", handleStorage);
-    window.addEventListener(STORAGE_EVENT, handleInternal);
-    return () => {
-      window.removeEventListener("storage", handleStorage);
-      window.removeEventListener(STORAGE_EVENT, handleInternal);
-    };
-  }, []);
+  }, [version]);
 
   const savePreset = useCallback(
     (input: {
@@ -57,7 +46,7 @@ export function useCustomPresets(): UseCustomPresets {
       const record = createCustomPresetRecord(input);
       const next = saveCustomPreset(record);
       setPresets(next);
-      window.dispatchEvent(new Event(STORAGE_EVENT));
+      notifyStorageChanged();
       return record;
     },
     [],
@@ -66,7 +55,7 @@ export function useCustomPresets(): UseCustomPresets {
   const removePreset = useCallback((presetId: string) => {
     const next = deleteCustomPreset(presetId);
     setPresets(next);
-    window.dispatchEvent(new Event(STORAGE_EVENT));
+    notifyStorageChanged();
   }, []);
 
   return { presets, savePreset, removePreset, isReady };

@@ -7,6 +7,7 @@ import {
   type FavoritesMap,
   type FavoriteSlot,
 } from "@/lib/filterEngine";
+import { notifyStorageChanged, useStorageBusVersion } from "@/hooks/useStorageBus";
 
 interface UseFavorites {
   favorites: FavoritesMap;
@@ -17,42 +18,30 @@ interface UseFavorites {
   slotForPreset: (presetId: string) => FavoriteSlot | undefined;
 }
 
-const STORAGE_EVENT = "filtr:favorites-changed";
-
 export function useFavorites(): UseFavorites {
-  const [favorites, setFavorites] = useState<FavoritesMap>({});
+  // Bootstrap once on mount. The bus version drives re-reads via the
+  // effect below. Compared to the previous per-hook `storage` listener,
+  // this means we only read `localStorage` for the favorites key, only
+  // when the bus fires for it, and we share one global listener with
+  // `useRecents` / `useCustomPresets`.
+  const [favorites, setFavorites] = useState<FavoritesMap>(() => loadFavorites());
   const [isReady, setIsReady] = useState(false);
+  const version = useStorageBusVersion();
 
   useEffect(() => {
     setFavorites(loadFavorites());
     setIsReady(true);
-
-    const handleStorage = (event: StorageEvent) => {
-      if (event.key === "filtr.favorites" || event.key === null) {
-        setFavorites(loadFavorites());
-      }
-    };
-    const handleInternal = () => setFavorites(loadFavorites());
-
-    window.addEventListener("storage", handleStorage);
-    window.addEventListener(STORAGE_EVENT, handleInternal);
-    return () => {
-      window.removeEventListener("storage", handleStorage);
-      window.removeEventListener(STORAGE_EVENT, handleInternal);
-    };
-  }, []);
+  }, [version]);
 
   const setFavorite = useCallback((slot: FavoriteSlot, presetId: string) => {
     const next = setFavoriteSlot(slot, presetId);
-    setFavorites(next);
-    window.dispatchEvent(new Event(STORAGE_EVENT));
+    notifyStorageChanged();
     return next;
   }, []);
 
   const clearFavorite = useCallback((slot: FavoriteSlot) => {
     const next = clearFavoriteSlot(slot);
-    setFavorites(next);
-    window.dispatchEvent(new Event(STORAGE_EVENT));
+    notifyStorageChanged();
     return next;
   }, []);
 
