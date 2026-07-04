@@ -199,8 +199,21 @@ function applyFadeFloat(channel: number, amount: number): number {
   return channel + (1 - channel) * lift;
 }
 
+// Match the Uint8 path's `sineNoise` in `src/lib/filters/index.ts` and
+// the WebGL fragment shader's `sineNoise` exactly. The previous
+// implementation used the 12.9898/78.233 sine-only formula with a
+// 0.5+0.5*sin(...) range mapping, which produces a *different* noise
+// pattern than the WebGL/Uint8 path (which uses the standard
+// `fract(sin(dot) * 43758.5453)` hash with 127.1/311.7 constants).
+// Both outputs are in [0, 1], so the downstream `sineNoise(...) - 0.5`
+// centering still works -- only the *pattern* of which pixels get
+// which noise value changes, which is exactly the parity fix we want
+// (preview now matches export). Keep the function in this file (not
+// re-exported from filters/index.ts) so the Float32 path stays
+// self-contained.
 function sineNoise(x: number, y: number): number {
-  return 0.5 + 0.5 * Math.sin(x * 12.9898 + y * 78.233);
+  const raw = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return raw - Math.floor(raw);
 }
 
 function applyHslFloat(

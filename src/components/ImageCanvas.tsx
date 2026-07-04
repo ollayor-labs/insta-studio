@@ -547,6 +547,15 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
     ? {
         filter: revealActive ? "blur(14px) saturate(0.88) brightness(0.88)" : "blur(18px) saturate(0.82) brightness(0.84)",
         transform: revealActive ? "scale(1.01)" : "scale(1.018)",
+        // Promote the base canvas to its own compositor layer for the
+        // duration of the magic transition. The canvas className sets
+        // `transition-[filter,transform] duration-500`, so promoting
+        // `transform` and `filter` lets the browser animate them on
+        // the GPU without re-rasterizing the layer per frame. The
+        // hint is removed automatically when `magicActive` flips
+        // false (the style object becomes `undefined`), which lets
+        // the layer be reclaimed.
+        willChange: "transform, filter" as const,
       }
     : undefined;
   const revealCanvasStyle = revealActive
@@ -557,6 +566,14 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
         opacity: 1,
         transitionDuration: "560ms",
         transitionTimingFunction: "cubic-bezier(0.22, 1, 0.36, 1)",
+        // The reveal canvas animates clip-path, filter, transform, and
+        // opacity over 560ms. Promote all four so the browser keeps
+        // the canvas on a dedicated GPU layer for the duration of the
+        // transition rather than re-compositing it with the parent on
+        // every frame. The hint is dropped as soon as `revealActive`
+        // flips false (the whole style object becomes `undefined`),
+        // so the layer is released after the transition ends.
+        willChange: "transform, clip-path, filter, opacity" as const,
       }
     : undefined;
 

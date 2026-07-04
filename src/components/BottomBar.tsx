@@ -357,10 +357,8 @@ const BottomBar: React.FC<BottomBarProps> = ({
   onExportHistoryOpenChange,
   onExportSuccess,
 }) => {
-  const [quality, setQuality] = useState(95);
   const [size, setSize] = useState<ExportSize>('original');
   const [format, setFormat] = useState<ExportFormat>('jpeg');
-  const [watermark, setWatermark] = useState(false);
   const [copying, setCopying] = useState(false);
   const [exporting, setExporting] = useState(false);
   // The most recent export's actual output dimensions. The
@@ -495,7 +493,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
 
   const handleDownload = useCallback(async () => {
     try {
-      const blob = await renderExportBlob(format, size, quality, watermark);
+      const blob = await renderExportBlob(format, size, 95, false);
       if (!blob) return;
 
       const profile = getExportProfile(exportProfileId);
@@ -516,8 +514,8 @@ const BottomBar: React.FC<BottomBarProps> = ({
         actualWidth: lastExportWidthRef.current ?? 0,
         actualHeight: lastExportHeightRef.current ?? 0,
         format: profile.format,
-        quality: profile.id === 'custom' ? quality : profile.quality,
-        watermark: watermark && profile.watermarkEligible,
+        quality: profile.id === 'custom' ? 95 : profile.quality,
+        watermark: false,
       });
     } catch (error) {
       console.error('Export failed', error);
@@ -526,11 +524,9 @@ const BottomBar: React.FC<BottomBarProps> = ({
     exportProfileId,
     filterName,
     format,
-    quality,
     renderExportBlob,
     size,
     sourceMimeType,
-    watermark,
     onExportSuccess,
   ]);
 
@@ -702,26 +698,6 @@ const BottomBar: React.FC<BottomBarProps> = ({
             <option value="webp">WebP</option>
             <option value="original">Original</option>
           </select>
-          <select
-            value={quality}
-            onChange={(event) => setQuality(Number(event.target.value))}
-            className="rounded-md border border-border bg-background px-2 py-1 font-mono-ui text-[11px] text-foreground"
-            disabled={resolveExportMime(format, sourceMimeType) === 'image/png'}
-          >
-            <option value={70}>Q70</option>
-            <option value={85}>Q85</option>
-            <option value={95}>Q95</option>
-            <option value={100}>Q100</option>
-          </select>
-          <label className="flex items-center gap-2 font-mono-ui text-[11px] text-muted-foreground">
-            <input
-              type="checkbox"
-              checked={watermark}
-              onChange={(event) => setWatermark(event.target.checked)}
-              className="h-3.5 w-3.5 rounded border-border bg-background"
-            />
-            Watermark
-          </label>
         </div>
 
         <button
@@ -750,11 +726,9 @@ const BottomBar: React.FC<BottomBarProps> = ({
           onApply={(record) => {
             // Re-applying an export means restoring the exact
             // settings the user had at the time. Profile + the
-            // social-toggle snap + the watermark flag are the
-            // three composable knobs the receipt captured.
+            // social-toggle snap are the composable knobs.
             onExportProfileChange(record.profileId);
             onOptimizeForSocialChange(record.optimizeForSocial);
-            setWatermark(record.watermark);
           }}
           onRemove={onRemoveExport}
           onClear={onClearExports}

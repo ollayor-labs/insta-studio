@@ -156,7 +156,6 @@ interface ProgramHandles {
   attribTexCoord: number;
   uniformSource: WebGLUniformLocation | null;
   uniformSourceSize: WebGLUniformLocation | null;
-  uniformTime: WebGLUniformLocation | null;
   uniformAdjust0: WebGLUniformLocation | null;
   uniformAdjust1: WebGLUniformLocation | null;
   uniformAdjust2: WebGLUniformLocation | null;
@@ -202,6 +201,27 @@ export class WebGlBackend implements PreviewBackend {
    * `render()` skips the readback.
    */
   private canvasBound: boolean;
+
+  // Reference-identity cache for `composeChannelLut` results. The
+  // backend composes the master + per-channel curve LUTs into a
+  // single 256-entry lookup per channel on every `applyUniforms`
+  // call -- that's 3x Uint8Array(256) allocations + 768 iterations
+  // per frame, even when the curve settings haven't changed since
+  // the last frame. The upstream pipeline (`useMemo` in the React
+  // component tree) preserves `settings.curveLuts.{master,r,g,b}`
+  // reference identity across renders when the user is dragging a
+  // non-curve slider, so we can skip recomposition by keying on the
+  // master + channel *references* (pointer equality, not value
+  // equality).
+  //
+  // WeakMap is keyed by object identity, so two distinct Uint8Arrays
+  // with identical contents still get separate cache entries -- no
+  // false-positive aliasing. Entries are GC'd automatically when
+  // the upstream LUT references are replaced, so the cache can't
+  // grow unbounded. The null-LUT case is handled via a shared
+  // singleton sentinel (`COMPOSE_NULL_KEY`), since WeakMap requires
+  // object keys.
+  private composeCache: WeakMap<Uint8Array, WeakMap<Uint8Array, Uint8Array>> = new WeakMap();
 
   constructor(options: WebGlBackendOptions = {}) {
     this.acquireContext = options.acquireContext ?? defaultAcquireContext;
@@ -545,7 +565,6 @@ export class WebGlBackend implements PreviewBackend {
       attribTexCoord: gl.getAttribLocation(program, 'a_texCoord'),
       uniformSource: gl.getUniformLocation(program, 'u_source'),
       uniformSourceSize: gl.getUniformLocation(program, 'u_sourceSize'),
-      uniformTime: gl.getUniformLocation(program, 'u_time'),
       uniformAdjust0: gl.getUniformLocation(program, 'u_adjust0'),
       uniformAdjust1: gl.getUniformLocation(program, 'u_adjust1'),
       uniformAdjust2: gl.getUniformLocation(program, 'u_adjust2'),
@@ -628,6 +647,34 @@ export class WebGlBackend implements PreviewBackend {
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, source.width, source.height, 0, gl.RGBA, gl.UNSIGNED_BYTE, source.data);
   }
 
+  /**
+   * Cached version of `composeChannelLut`. Returns the previously
+   * composed LUT when both the master and channel references match
+   * the last call with the same pair, skipping the 256-iteration
+   * recomposition and the Uint8Array(256) allocation. The cache is
+   * keyed by reference identity (pointer equality) via WeakMap, so
+   * upstream reference replacement -- which happens whenever the
+   * user edits a curve point -- automatically invalidates the
+   * stale entry. Callers that pass `null` for either LUT share the
+   * `COMPOSE_NULL_KEY` sentinel so identity semantics still hold.
+   */
+  private getComposedLut(master: Uint8Array | null, channel: Uint8Array | null): Uint8Array {
+    const mKey = master ?? COMPOSE_NULL_KEY;
+    const cKey = channel ?? COMPOSE_NULL_KEY;
+    let inner = this.composeCache.get(mKey);
+    if (inner) {
+      const cached = inner.get(cKey);
+      if (cached) return cached;
+    }
+    const result = composeChannelLut(master, channel);
+    if (!inner) {
+      inner = new WeakMap<Uint8Array, Uint8Array>();
+      this.composeCache.set(mKey, inner);
+    }
+    inner.set(cKey, result);
+    return result;
+  }
+
   private applyUniforms(settings: ResolvedFilterSettings, source: ImageData): void {
     const gl = this.gl;
     if (!gl || !this.program) return;
@@ -645,7 +692,6 @@ export class WebGlBackend implements PreviewBackend {
     gl.uniform4f(this.program.uniformAdjust1, a.whites / 100, a.blacks / 100, a.temperature / 100, a.tint / 100);
     gl.uniform4f(this.program.uniformAdjust2, a.saturation / 100, a.vibrance / 100, a.fade / 100, a.vignette / 100);
     gl.uniform1f(this.program.uniformGrain, a.grain / 100);
-    gl.uniform1f(this.program.uniformTime, performance.now() / 1000);
 
     // HSL bands -- pack up to maxHslBands, then zero-pad.
     const bands = settings.hsl.slice(0, this.maxHslBands);
@@ -689,9 +735,9 @@ export class WebGlBackend implements PreviewBackend {
     // symptom. Bind each LUT to its own unit (TEXTURE1, TEXTURE2,
     // TEXTURE3).
     if (this.curveLutTextures) {
-      const rLut = composeChannelLut(settings.curveLuts.master, settings.curveLuts.r);
-      const gLut = composeChannelLut(settings.curveLuts.master, settings.curveLuts.g);
-      const bLut = composeChannelLut(settings.curveLuts.master, settings.curveLuts.b);
+      const rLut = this.getComposedLut(settings.curveLuts.master, settings.curveLuts.r);
+      const gLut = this.getComposedLut(settings.curveLuts.master, settings.curveLuts.g);
+      const bLut = this.getComposedLut(settings.curveLuts.master, settings.curveLuts.b);
       gl.activeTexture(gl.TEXTURE1);
       gl.bindTexture(gl.TEXTURE_2D, this.curveLutTextures[0]);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 256, 1, gl.RED, gl.UNSIGNED_BYTE, rLut);
@@ -794,6 +840,16 @@ function identityLut(): Uint8Array {
  * 256-entry lookup here so the shader does one texture sample per
  * channel. Exported for jsdom-side unit testing.
  */
+
+// Shared singleton sentinel standing in for the "no LUT" case in
+// the WeakMap-keyed compose cache. WeakMap requires object keys, so
+// we can't use `null` directly -- all callers that pass `null` for
+// the master or channel LUT share this one zero-length Uint8Array as
+// their cache key, which means the identity-equality semantics still
+// hold (any two `null` lookups hit the same cache entry, as they
+// should, since `composeChannelLut(null, null)` is deterministic).
+const COMPOSE_NULL_KEY = new Uint8Array(0);
+
 export function composeChannelLut(
   masterLut: Uint8Array | null,
   channelLut: Uint8Array | null,

@@ -19,7 +19,6 @@ out vec4 outColor;
 // resolve to anyway, so the two approaches agree.
 uniform sampler2D u_source;
 uniform vec2 u_sourceSize;
-uniform float u_time;
 
 uniform vec4 u_adjust0;
 uniform vec4 u_adjust1;
