@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { createRecentsStorage, type RecentMeta, type RecentRecord } from "@/lib/recents";
 import { notifyStorageChanged, useStorageBusVersion } from "@/hooks/useStorageBus";
 
@@ -27,7 +27,7 @@ interface UseRecents {
 }
 
 export function useRecents(): UseRecents {
-  const storage = createRecentsStorage();
+  const storage = useMemo(() => createRecentsStorage(), []);
   const isSupported = storage !== null;
   const [recents, setRecents] = useState<RecentMeta[]>([]);
   const [isReady, setIsReady] = useState(false);

@@ -1,11 +1,27 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { Copy, Download, ImageDown, Play, Redo2, SplitSquareVertical, Undo2, ZoomIn, ZoomOut } from 'lucide-react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Copy, Crop, Download, ImageDown, Play, Redo2, SplitSquareVertical, Undo2, ZoomIn, ZoomOut } from 'lucide-react';
 import { prepareFilterSettings, type Adjustments, type ImageAnalysis } from '@/lib/filterEngine';
 import { renderFilterOnWorker } from '@/lib/filter-worker';
 import { resolveExportExtension, resolveExportMime } from '@/lib/exportFormat';
 import { getExifOrientation, withExifInjected } from '@/lib/exif';
-import { showCopyFailedToast, showCopyToast, showDownloadToast } from '@/lib/editorToasts';
+import {
+  showCopyFailedToast,
+  showCopyToast,
+} from '@/lib/editorToasts';
 import { SlotLabel } from '@/components/ui/slot-label';
+import { detectActiveRatio, formatRatioLabel, type CropState } from '@/lib/crop';
+import { cropImageDataOffscreen } from '@/lib/crop';
+import {
+  getExportProfile,
+  applyUnsharpMask,
+  resampleForProfile,
+  resolveTargetDimensions,
+  type ExportProfile,
+  type ExportProfileId,
+  type ExportHistoryRecord,
+} from '@/lib/export';
+import ExportProfileMenu from '@/components/ExportProfileMenu';
+import RecentExportsMenu from '@/components/RecentExportsMenu';
 
 type ExportSize = 'original' | '2x' | '50%';
 type ExportFormat = 'jpeg' | 'png' | 'webp' | 'original';
@@ -50,6 +66,41 @@ interface BottomBarProps {
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
+  /** Current crop state. Applied to the export pipeline so the
+   *  downloaded file matches what the user sees in the canvas. */
+  cropState: CropState;
+  onOpenCropModal: () => void;
+  /** Strict export profile applied on top of the user's format /
+   *  size / quality choices. */
+  exportProfileId: ExportProfileId;
+  optimizeForSocial: boolean;
+  onExportProfileChange: (id: ExportProfileId) => void;
+  onOptimizeForSocialChange: (value: boolean) => void;
+  /** Export history shown in the dropdown next to the export button. */
+  exportHistory: ExportHistoryRecord[];
+  exportHistoryReady: boolean;
+  exportHistorySupported: boolean;
+  onRemoveExport: (id: string) => void;
+  onClearExports: () => void;
+  exportHistoryOpen?: boolean;
+  onExportHistoryOpenChange?: (open: boolean) => void;
+  /**
+   * Called after a successful download. The page uses this to
+   * push the export history record (with the encoded blob as
+   * the thumbnail source) and to show the receipt toast. We
+   * pass the blob + the resolved metadata so the page can
+   * build the record without re-deriving anything.
+   */
+  onExportSuccess: (info: {
+    blob: Blob;
+    fileName: string;
+    profile: ExportProfile;
+    actualWidth: number;
+    actualHeight: number;
+    format: 'jpeg' | 'png' | 'webp';
+    quality: number;
+    watermark: boolean;
+  }) => void;
 }
 
 type RenderCanvas = HTMLCanvasElement | OffscreenCanvas;
@@ -131,6 +182,42 @@ function applyWatermark(canvas: RenderCanvas): void {
   context.font = `${Math.max(14, Math.round(width * 0.022))}px "DM Mono", monospace`;
   context.fillText('insta-studio', width - Math.max(18, width * 0.025), height - Math.max(18, height * 0.025));
   context.restore();
+}
+
+// A box is "the full image" when it covers the whole normalized
+// space within 1px tolerance. We use this to skip the crop
+// pipeline entirely when the user hasn't cropped at all.
+function isFullImageCrop(box: { x: number; y: number; w: number; h: number }): boolean {
+  return (
+    box.x <= 0.001 &&
+    box.y <= 0.001 &&
+    box.w >= 0.999 &&
+    box.h >= 0.999
+  );
+}
+
+// Read a RenderCanvas's pixels back to an ImageData. We need this
+// because the crop helper works on ImageData (the only common
+// denominator across OffscreenCanvas / 2D canvas) but our export
+// pipeline builds the oriented base as a 2D canvas.
+function canvasToImageData(canvas: RenderCanvas): ImageData {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('Could not read pixels from export canvas');
+  }
+  return ctx.getImageData(0, 0, canvas.width, canvas.height);
+}
+
+// Wrap an ImageData into a fresh RenderCanvas for downstream
+// resampling. Offscreen when available, plain canvas otherwise.
+function imageDataToCanvas(imageData: ImageData): RenderCanvas {
+  const out = createCanvas(imageData.width, imageData.height);
+  const ctx = out.getContext('2d');
+  if (!ctx) {
+    throw new Error('Could not create canvas for cropped image');
+  }
+  ctx.putImageData(imageData, 0, 0);
+  return out;
 }
 
 // Maps an EXIF orientation value (1..8) to the (width, height) of the
@@ -238,7 +325,10 @@ const BottomBar: React.FC<BottomBarProps> = ({
   effectIntensity,
   analysis,
   adjustments,
-  _fileName,
+  // `fileName` is kept on the props for callers that want to
+  // thread it into future receipt strings; the receipt is
+  // built from the resolved profile dimensions today.
+  fileName: _fileName,
   sourceMimeType,
   currentExifBytes,
   viewMode,
@@ -254,6 +344,18 @@ const BottomBar: React.FC<BottomBarProps> = ({
   canRedo,
   onUndo,
   onRedo,
+  cropState,
+  onOpenCropModal,
+  exportProfileId,
+  optimizeForSocial,
+  onExportProfileChange,
+  onOptimizeForSocialChange,
+  exportHistory,
+  onRemoveExport,
+  onClearExports,
+  exportHistoryOpen,
+  onExportHistoryOpenChange,
+  onExportSuccess,
 }) => {
   const [quality, setQuality] = useState(95);
   const [size, setSize] = useState<ExportSize>('original');
@@ -261,7 +363,38 @@ const BottomBar: React.FC<BottomBarProps> = ({
   const [watermark, setWatermark] = useState(false);
   const [copying, setCopying] = useState(false);
   const [exporting, setExporting] = useState(false);
+  // The most recent export's actual output dimensions. The
+  // download handler reads these to build the receipt and the
+  // history record. They're set inside `renderExportBlob` and
+  // read by `handleDownload` immediately after.
+  const lastExportWidthRef = React.useRef<number | null>(null);
+  const lastExportHeightRef = React.useRef<number | null>(null);
+  // Preview dimensions for the ExportProfileMenu. The full
+  // raster is lazy (allocated on first export); the preview
+  // raster is always available once an image is loaded. We
+  // surface the *source* dimensions here, which is what the
+  // user sees in the canvas anyway. Computing the full-res
+  // dimensions on every render would trigger a setState on
+  // the parent (the lazy raster materializer) inside a render
+  // phase, which React forbids.
+  const previewDims = useMemo(() => {
+    if (!fullImageData) return null;
+    return { width: fullImageData.width, height: fullImageData.height };
+  }, [fullImageData]);
 
+  // The export pipeline. The order of operations is:
+  //   1. Render the full-resolution ImageData through the filter
+  //      engine (float32 precision, all passes).
+  //   2. Apply the crop box (if any) — the user sees this in the
+  //      CropModal, and the export must match.
+  //   3. Apply the export profile — the strict spec (longest
+  //      edge, sRGB, sharpen). The profile is the *contract*.
+  //   4. Apply the user's chosen size scale and watermark.
+  //   5. Encode and re-inject EXIF.
+  //
+  // The receipt is generated last and reflects the *actual*
+  // output dimensions (which can differ from the source if the
+  // profile capped the longest edge).
   const renderExportBlob = useCallback(
     async (targetFormat: ExportFormat, targetSize: ExportSize, targetQuality: number, withWatermark: boolean) => {
       // The full-resolution raster is now lazy. The hook
@@ -283,37 +416,58 @@ const BottomBar: React.FC<BottomBarProps> = ({
             quality: 'export',
             strength: filterStrength,
             effectIntensity,
-            // Run the export through the Float32 pipeline to keep sub-LSB
-            // precision across the 5+ passes and avoid the per-pass
-            // rounding that produces banding in smooth gradients. Preview
-            // (the live canvas) stays on Uint8 for speed.
             precision: 'float32',
           },
           analysis ?? undefined,
         );
 
         const filtered = await renderFilterOnWorker(fullRaster, settings);
-        // Apply EXIF orientation to the rendered pixels so a portrait-
-        // orientation phone photo comes out the right way up. The
-        // metadata re-injection below still tags the file with the
-        // original orientation; downstream readers that *don't* honour
-        // EXIF will see the correctly-oriented pixels.
-        const orientation = getExifOrientation(currentExifBytes);
-        const baseCanvas = drawImageDataToCanvas(filtered, orientation);
-        const exportCanvas = resampleCanvas(baseCanvas, targetSize);
 
-        if (withWatermark) {
+        // Apply EXIF orientation. The re-injection below still
+        // tags the file with the original orientation; downstream
+        // readers that *don't* honour EXIF will see the
+        // correctly-oriented pixels.
+        const orientation = getExifOrientation(currentExifBytes);
+        const oriented = drawImageDataToCanvas(filtered, orientation);
+
+        // Step 2: crop. The crop box is in normalized image
+        // coordinates; we project to the oriented canvas's pixel
+        // space. If the box is the default full image we skip the
+        // crop pipeline (no-op).
+        const cropped: RenderCanvas = isFullImageCrop(cropState.box)
+          ? oriented
+          : (() => {
+              const { imageData } = cropImageDataOffscreen(canvasToImageData(oriented), cropState.box);
+              return imageDataToCanvas(imageData);
+            })();
+
+        // Step 3: export profile. The profile's maxLongestEdge
+        // caps the longer side; the shorter side follows the
+        // source aspect. The sharpening pass runs *after* the
+        // resize (so the radius is in the output space, not the
+        // source space).
+        const profile = getExportProfile(exportProfileId);
+        const targetDims = resolveTargetDimensions(cropped.width, cropped.height, profile);
+        const profileCanvas = resampleForProfile(cropped, targetDims.width, targetDims.height);
+        if (profile.sharpen > 0) {
+          applyUnsharpMask(profileCanvas, profile.sharpen);
+        }
+
+        // Step 4: user's size scale + watermark.
+        const exportCanvas = resampleCanvas(profileCanvas, targetSize);
+        if (withWatermark && profile.watermarkEligible) {
           applyWatermark(exportCanvas);
         }
 
+        // Stash the actual output dimensions for the receipt and
+        // the history record. The download handler reads these
+        // *after* the await resolves.
+        lastExportWidthRef.current = exportCanvas.width;
+        lastExportHeightRef.current = exportCanvas.height;
+
+        // Step 5: encode + EXIF re-injection.
         const resolvedMime = resolveExportMime(targetFormat, sourceMimeType);
         const rawBlob = await canvasToBlob(exportCanvas, targetFormat, targetQuality, sourceMimeType);
-        // Re-inject the original EXIF payload (JPEG, PNG, and WebP all
-        // support it). The canvas encoder strips it; this restores the
-        // user's orientation, camera info, etc. The dispatch lives in
-        // `lib/exif.ts` and is format-aware underneath, but the storage
-        // shape we pass in is format-agnostic (bare TIFF) thanks to the
-        // import-time reader.
         if (resolvedMime === 'image/jpeg' || resolvedMime === 'image/png' || resolvedMime === 'image/webp') {
           return await withExifInjected(rawBlob, currentExifBytes);
         }
@@ -326,26 +480,59 @@ const BottomBar: React.FC<BottomBarProps> = ({
       adjustments,
       analysis,
       currentExifBytes,
+      cropState.box,
       effectIntensity,
+      exportProfileId,
       filterName,
       filterStrength,
       fullImageData,
       getFullImageData,
       sourceMimeType,
+      lastExportHeightRef,
+      lastExportWidthRef,
     ],
   );
 
   const handleDownload = useCallback(async () => {
-    const blob = await renderExportBlob(format, size, quality, watermark);
-    if (!blob) return;
+    try {
+      const blob = await renderExportBlob(format, size, quality, watermark);
+      if (!blob) return;
 
-    const link = document.createElement('a');
-    link.download = createExportName(filterName, format, sourceMimeType);
-    link.href = URL.createObjectURL(blob);
-    link.click();
-    window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
-    showDownloadToast(filterName);
-  }, [filterName, format, quality, renderExportBlob, size, sourceMimeType, watermark]);
+      const profile = getExportProfile(exportProfileId);
+      const exportName = createExportName(filterName, format, sourceMimeType);
+
+      const link = document.createElement('a');
+      link.download = exportName;
+      link.href = URL.createObjectURL(blob);
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      // The receipt toast is fired by the page (so the user sees it
+      // alongside the history write); we just notify the page that
+      // an export succeeded with everything it needs.
+      onExportSuccess({
+        blob,
+        fileName: exportName,
+        profile,
+        actualWidth: lastExportWidthRef.current ?? 0,
+        actualHeight: lastExportHeightRef.current ?? 0,
+        format: profile.format,
+        quality: profile.id === 'custom' ? quality : profile.quality,
+        watermark: watermark && profile.watermarkEligible,
+      });
+    } catch (error) {
+      console.error('Export failed', error);
+    }
+  }, [
+    exportProfileId,
+    filterName,
+    format,
+    quality,
+    renderExportBlob,
+    size,
+    sourceMimeType,
+    watermark,
+    onExportSuccess,
+  ]);
 
   const handleCopy = useCallback(async () => {
     const blob = await renderExportBlob('png', 'original', 100, false);
@@ -536,6 +723,44 @@ const BottomBar: React.FC<BottomBarProps> = ({
             Watermark
           </label>
         </div>
+
+        <button
+          onClick={onOpenCropModal}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border bg-background text-foreground hover:border-primary/40 hover:text-primary transition-colors font-mono-ui text-[11px]"
+          title="Crop (K)"
+        >
+          <Crop className="w-3 h-3" />
+          <SlotLabel
+            text={isFullImageCrop(cropState.box) ? 'Crop' : formatRatioLabel(detectActiveRatio(cropState.box))}
+            flashColor={false}
+            tone="inherit"
+          />
+        </button>
+
+        <ExportProfileMenu
+          activeProfileId={exportProfileId}
+          optimizeForSocial={optimizeForSocial}
+          onProfileChange={onExportProfileChange}
+          onOptimizeForSocialChange={onOptimizeForSocialChange}
+          preview={previewDims}
+        />
+
+        <RecentExportsMenu
+          history={exportHistory}
+          onApply={(record) => {
+            // Re-applying an export means restoring the exact
+            // settings the user had at the time. Profile + the
+            // social-toggle snap + the watermark flag are the
+            // three composable knobs the receipt captured.
+            onExportProfileChange(record.profileId);
+            onOptimizeForSocialChange(record.optimizeForSocial);
+            setWatermark(record.watermark);
+          }}
+          onRemove={onRemoveExport}
+          onClear={onClearExports}
+          open={exportHistoryOpen}
+          onOpenChange={onExportHistoryOpenChange}
+        />
 
         <button
           onClick={handleCopy}

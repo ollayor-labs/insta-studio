@@ -11,6 +11,7 @@ import {
 } from "@/lib/filterEngine";
 import { analyzeImageDataOnWorker, cancelPendingAnalysis } from "@/lib/analysis-worker";
 import {
+  showExportReceiptToast,
   showFilterChangedToast,
   showHeicConversionFailedToast,
   showImageDecodeFailedToast,
@@ -22,6 +23,7 @@ import { PREVIEW_MAX_DIMENSION, useFilter } from "@/hooks/useFilter";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { useCustomPresets } from "@/hooks/useCustomPresets";
 import { useRecents } from "@/hooks/useRecents";
+import { useExportHistory } from "@/hooks/useExportHistory";
 import { useFavorites } from "@/hooks/useFavorites";
 import { useHistory, type EditorSnapshot } from "@/hooks/useHistory";
 import { FAVORITE_SLOTS, getFilterPresetById, type FavoriteSlot, type FavoritesMap } from "@/lib/filterEngine";
@@ -34,12 +36,15 @@ import {
 import { readExifFromBlob } from "@/lib/exif";
 import RecentsList from "@/components/RecentsList";
 import type { RecentMeta } from "@/lib/recents";
+import { type ExportProfileId, buildExportReceipt } from "@/lib/export";
 import DropZone from "@/components/DropZone";
 import { formatFileSize } from "@/lib/fileSize";
 import FilterSidebar from "@/components/FilterSidebar";
 import RawAdjustmentsPanel from "@/components/AdjustmentsPanel";
 import RawImageCanvas from "@/components/ImageCanvas";
 import BottomBar from "@/components/BottomBar";
+import CropModal from "@/components/CropModal";
+import { DEFAULT_CROP_STATE, type CropState } from "@/lib/crop";
 import { Loader2 } from "lucide-react";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
 
@@ -178,6 +183,12 @@ const Index = () => {
   // can commit a single history entry per drag instead of one per tick.
   const dragInProgressRef = useRef<null | { kind: "strength" | "intensity" | "adjustment"; key?: keyof Adjustments }>(null);
   const [zoom, setZoom] = useState(100);
+  const [cropState, setCropState] = useState<CropState>(DEFAULT_CROP_STATE);
+  const [cropModalOpen, setCropModalOpen] = useState(false);
+  const [cropAutoCenter, setCropAutoCenter] = useState(false);
+  const [exportProfileId, setExportProfileId] = useState<ExportProfileId>("custom");
+  const [optimizeForSocial, setOptimizeForSocial] = useState(false);
+  const [exportHistoryOpen, setExportHistoryOpen] = useState(false);
   const [exportSignal, setExportSignal] = useState(0);
   const [sceneMode, setSceneMode] = useState<"adaptive" | "studio">("adaptive");
   // Tracks the file currently being imported (from any source: drop,
@@ -188,6 +199,14 @@ const Index = () => {
   const [importingFile, setImportingFile] = useState<{ name: string; size: number } | null>(null);
   const { presets: customPresets, savePreset, removePreset, isReady: customPresetsReady } = useCustomPresets();
   const { recents, isReady: recentsReady, isSupported: recentsSupported, addRecent, removeRecent, clearRecents, getRecentBlob } = useRecents();
+  const {
+    exports: exportHistory,
+    isReady: exportHistoryReady,
+    isSupported: exportHistorySupported,
+    addExport,
+    removeExport,
+    clearExports,
+  } = useExportHistory();
   const { favorites, setFavorite, clearFavorite } = useFavorites();
 
   const effectiveViewMode = spaceHeld ? "original" : viewMode;
@@ -272,6 +291,7 @@ const Index = () => {
       setCompareMode(false);
       setComparePosition(50);
       setZoom(100);
+      setCropState(DEFAULT_CROP_STATE);
       // Fire-and-forget: storing in IndexedDB should never block the editor
       // from showing the new image. Errors are swallowed so a quota-exceeded
       // browser doesn't break the import flow. We also pull the EXIF TIFF
@@ -392,6 +412,83 @@ const Index = () => {
       "reset",
     );
   }, [activeFilter, customPresets, apply, state]);
+
+  // After a successful export, push the history record and
+  // fire the receipt toast. The record carries enough
+  // metadata that the user can re-apply the same settings
+  // tomorrow (see the Recent Exports menu in the bottom
+  // bar).
+  const handleExportSuccess = useCallback(
+    (info: {
+      blob: Blob;
+      fileName: string;
+      profile: import("@/lib/export").ExportProfile;
+      actualWidth: number;
+      actualHeight: number;
+      format: "jpeg" | "png" | "webp";
+      quality: number;
+      watermark: boolean;
+    }) => {
+      const receipt = buildExportReceipt({
+        profile: info.profile,
+        actualWidth: info.actualWidth,
+        actualHeight: info.actualHeight,
+        watermark: info.watermark,
+      });
+      showExportReceiptToast(activeFilter, receipt, info.fileName, () => setExportHistoryOpen(true));
+      // Push the record into IndexedDB. The encoded blob is
+      // used as the thumbnail source -- `createThumbnail`
+      // downsamples it to ~128px JPEG. Errors are swallowed
+      // so a quota-exceeded browser doesn't surface a
+      // confusing failure on top of an already-completed
+      // export. We don't await: the toast has already shown
+      // and the download has started, so blocking would only
+      // delay the next user gesture. The hook's storage-bus
+      // subscriber will refresh the Recent Exports list once
+      // the write resolves.
+      addExport({
+        fileName: info.fileName,
+        profileId: info.profile.id,
+        profileLabel: info.profile.label,
+        width: info.actualWidth,
+        height: info.actualHeight,
+        maxLongestEdge: info.profile.maxLongestEdge,
+        format: info.format,
+        quality: info.quality,
+        srgb: info.profile.srgb,
+        sharpen: info.profile.sharpen,
+        stripExif: info.profile.stripExif,
+        optimizeForSocial,
+        watermark: info.watermark,
+        filterName: activeFilter,
+        filterStrength,
+        effectIntensity,
+        thumbSource: info.blob,
+      }).catch((err) => {
+        console.error("[export] failed to record history", err);
+      });
+    },
+    [activeFilter, addExport, effectIntensity, filterStrength, optimizeForSocial],
+  );
+
+  // Open the crop modal with K. Mirrors the bottom-bar
+  // button so power users don't need to reach for the
+  // mouse. We only handle K when an image is loaded.
+  useEffect(() => {
+    if (!image) return;
+    const onKey = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || target?.isContentEditable) return;
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setCropModalOpen((open) => !open);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [image]);
 
   const handleFilterChange = useCallback(
     (name: string) => {
@@ -764,7 +861,7 @@ const Index = () => {
           </div>
         </header>
 
-        <div className="flex-1 flex flex-col items-center gap-6 p-8">
+        <div className="flex-1 flex flex-col items-center justify-center gap-6 p-8">
           <div className="w-full max-w-xl">
             <DropZone
               onImageLoad={handleImageLoad}
@@ -932,6 +1029,30 @@ const Index = () => {
         canRedo={canRedo}
         onUndo={handleUndo}
         onRedo={handleRedo}
+        cropState={cropState}
+        onOpenCropModal={() => setCropModalOpen(true)}
+        exportProfileId={exportProfileId}
+        optimizeForSocial={optimizeForSocial}
+        onExportProfileChange={setExportProfileId}
+        onOptimizeForSocialChange={setOptimizeForSocial}
+        exportHistory={exportHistory}
+        exportHistoryReady={exportHistoryReady}
+        exportHistorySupported={exportHistorySupported}
+        onRemoveExport={removeExport}
+        onClearExports={clearExports}
+        exportHistoryOpen={exportHistoryOpen}
+        onExportHistoryOpenChange={setExportHistoryOpen}
+        onExportSuccess={handleExportSuccess}
+      />
+
+      <CropModal
+        open={cropModalOpen}
+        onOpenChange={setCropModalOpen}
+        sourceImage={image}
+        state={cropState}
+        onApply={setCropState}
+        autoCenter={cropAutoCenter}
+        onAutoCenterChange={setCropAutoCenter}
       />
     </div>
   );
