@@ -288,7 +288,7 @@ const CropModal: React.FC<CropModalProps> = ({
       // We use the *current* active ratio as the locked ratio
       // for the snap math if there is one; otherwise the box
       // gets a fresh snap from the center.
-      setWorkingBox((box) => resizeBoxToRatio(box, spec.ratio, 0.5, 0.5));
+      setWorkingBox(resizeBoxToRatio(DEFAULT_CROP_BOX, spec.ratio, 0.5, 0.5));
     },
     [],
   );

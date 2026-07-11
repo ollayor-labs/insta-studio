@@ -1,8 +1,16 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import HistogramBadge from "@/components/HistogramBadge";
+import SafeAreaOverlay from "@/components/SafeAreaOverlay";
+import CropFrameOverlay from "@/components/CropFrameOverlay";
+import type { CropBox } from "@/lib/crop";
 import { usePrefersReducedMotion } from "@/hooks/use-prefers-reduced-motion";
 import { detectClippingFromImageData, type ClippingChannels, type ImageAnalysis } from "@/lib/filterEngine";
 import type { BackendStatus } from "@/hooks/useFilter";
+import type { TextLayer } from "@/lib/text/types";
+
+// react-konva is heavy; only pull it into the bundle when text layers
+// are actually rendered/edited.
+const TextOverlay = React.lazy(() => import("@/components/TextOverlay"));
 
 interface ImageCanvasProps {
   image: HTMLImageElement | null;
@@ -33,6 +41,18 @@ interface ImageCanvasProps {
   backendStatus?: BackendStatus | null;
   studioBackendStatus?: BackendStatus | null;
   sourceAnalysis: ImageAnalysis | null;
+  /** Crop preview frame (dim outside + rule-of-thirds). */
+  cropBox?: CropBox;
+  cropActive?: boolean;
+  /** Safe-area guide overlay (preview only, never exported). */
+  guidePlatform?: string | null;
+  /** Text layers rendered over the image (interactive when textActive). */
+  textLayers?: TextLayer[];
+  selectedTextId?: string | null;
+  onSelectText?: (id: string | null) => void;
+  onChangeTextLayer?: (layer: TextLayer) => void;
+  /** When true the text overlay captures pointer events for editing. */
+  textActive?: boolean;
 }
 
 function clampZoom(value: number): number {
@@ -78,6 +98,14 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
   backendStatus = null,
   studioBackendStatus = null,
   sourceAnalysis,
+  cropBox,
+  cropActive = false,
+  guidePlatform = null,
+  textLayers,
+  selectedTextId = null,
+  onSelectText,
+  onChangeTextLayer,
+  textActive = false,
 }) => {
   // `previewCanvasRef` is owned by the page (which also threads it
   // to `useFilter`). The WebGL backend writes the filtered preview
@@ -712,6 +740,30 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
             })()}
           </div>
         ) : null}
+        {/* Text layers overlay (react-konva). Interactive only when the
+            Text tool is active, otherwise pointer-events pass through so
+            zoom / compare keep working. Sized to the displayed image box. */}
+        {displaySize && textLayers && (textLayers.length > 0 || textActive) ? (
+          <div
+            className="absolute inset-0"
+            style={{ zIndex: 15, pointerEvents: textActive ? "auto" : "none" }}
+          >
+            <Suspense fallback={null}>
+              <TextOverlay
+                width={displaySize.width}
+                height={displaySize.height}
+                layers={textLayers}
+                selectedId={textActive ? selectedTextId : null}
+                onSelect={(id) => onSelectText?.(id)}
+                onChange={(layer) => onChangeTextLayer?.(layer)}
+              />
+            </Suspense>
+          </div>
+        ) : null}
+        {/* Crop preview frame (non-interactive; drag lives in CropModal). */}
+        {cropBox ? <CropFrameOverlay box={cropBox} active={cropActive} /> : null}
+        {/* Safe-area guides overlay (SVG, preview only, never exported). */}
+        <SafeAreaOverlay platformId={guidePlatform} />
         {sourceAnalysis && liveClipping ? (
           <div className="absolute right-4 top-4 z-10">
             <HistogramBadge

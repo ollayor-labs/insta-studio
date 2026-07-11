@@ -108,19 +108,19 @@ export async function loadBlobAsImage(
     const image = new Image();
     image.decoding = "async";
 
-    const cleanup = () => {
+    image.onload = () => {
       image.onload = null;
       image.onerror = null;
-      URL.revokeObjectURL(objectUrl);
-    };
-
-    image.onload = () => {
-      cleanup();
+      // Keep the object URL alive — image.src is still referenced
+      // by CropModal (and anywhere else that reads sourceImage.src).
+      // The blob is also returned, so memory is already committed.
       resolve({ image, blob });
     };
 
     image.onerror = () => {
-      cleanup();
+      image.onload = null;
+      image.onerror = null;
+      URL.revokeObjectURL(objectUrl);
       reject(new ImageImportError(errorCode, "The image could not be decoded in this browser."));
     };
 

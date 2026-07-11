@@ -4,6 +4,9 @@ import { prepareFilterSettings, type Adjustments, type ImageAnalysis } from '@/l
 import { renderFilterOnWorker } from '@/lib/filter-worker';
 import { resolveExportExtension, resolveExportMime } from '@/lib/exportFormat';
 import { getExifOrientation, withExifInjected } from '@/lib/exif';
+import { drawTextLayers } from '@/lib/text/renderTextLayers';
+import type { TextLayer } from '@/lib/text/types';
+import { stripGpsFromJpegDataUrl, type MetadataPrivacy } from '@/lib/metadata';
 import {
   showCopyFailedToast,
   showCopyToast,
@@ -53,6 +56,10 @@ interface BottomBarProps {
   fileName: string;
   sourceMimeType: string | null;
   currentExifBytes: Uint8Array | null;
+  /** Text layers flattened into the export (normalized to image space). */
+  textLayers?: TextLayer[];
+  /** Metadata privacy choice applied at export time. */
+  metadataPrivacy?: MetadataPrivacy;
   viewMode: 'edited' | 'original' | 'studio';
   onViewModeChange: (value: 'edited' | 'original' | 'studio') => void;
   compareMode: boolean;
@@ -316,6 +323,29 @@ function resampleCanvas(source: RenderCanvas, size: ExportSize): RenderCanvas {
   return canvas;
 }
 
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read blob'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+// Remove only the GPS block from an already-encoded JPEG blob. piexifjs is
+// JPEG-only, so callers gate this on `image/jpeg`. Any failure returns the
+// original blob unchanged (the metadata helper swallows parse errors).
+async function stripGpsFromJpegBlob(blob: Blob): Promise<Blob> {
+  try {
+    const dataUrl = await blobToDataUrl(blob);
+    const stripped = stripGpsFromJpegDataUrl(dataUrl);
+    if (stripped === dataUrl) return blob;
+    return await (await fetch(stripped)).blob();
+  } catch {
+    return blob;
+  }
+}
+
 const BottomBar: React.FC<BottomBarProps> = ({
   fullImageData,
   getFullImageData,
@@ -331,6 +361,8 @@ const BottomBar: React.FC<BottomBarProps> = ({
   fileName: _fileName,
   sourceMimeType,
   currentExifBytes,
+  textLayers,
+  metadataPrivacy = 'keep',
   viewMode,
   onViewModeChange,
   compareMode,
@@ -428,6 +460,18 @@ const BottomBar: React.FC<BottomBarProps> = ({
         const orientation = getExifOrientation(currentExifBytes);
         const oriented = drawImageDataToCanvas(filtered, orientation);
 
+        // Step 1b: flatten text layers onto the full-resolution oriented
+        // canvas, BEFORE crop — so a crop trims the text exactly as it
+        // does the image (matching the editor's WYSIWYG overlay). Text
+        // geometry is normalized to image space, so it lands correctly at
+        // any output resolution.
+        if (textLayers && textLayers.length > 0) {
+          const textCtx = oriented.getContext('2d') as CanvasRenderingContext2D | null;
+          if (textCtx) {
+            await drawTextLayers(textCtx, oriented.width, oriented.height, textLayers);
+          }
+        }
+
         // Step 2: crop. The crop box is in normalized image
         // coordinates; we project to the oriented canvas's pixel
         // space. If the box is the default full image we skip the
@@ -466,8 +510,18 @@ const BottomBar: React.FC<BottomBarProps> = ({
         // Step 5: encode + EXIF re-injection.
         const resolvedMime = resolveExportMime(targetFormat, sourceMimeType);
         const rawBlob = await canvasToBlob(exportCanvas, targetFormat, targetQuality, sourceMimeType);
+        // Metadata privacy. "strip-all" drops every tag: the canvas encode
+        // already stripped EXIF, so we just skip re-injection. Otherwise
+        // re-inject the source EXIF, then optionally remove GPS only.
+        if (metadataPrivacy === 'strip-all') {
+          return rawBlob;
+        }
         if (resolvedMime === 'image/jpeg' || resolvedMime === 'image/png' || resolvedMime === 'image/webp') {
-          return await withExifInjected(rawBlob, currentExifBytes);
+          const injected = await withExifInjected(rawBlob, currentExifBytes);
+          if (metadataPrivacy === 'strip-gps' && resolvedMime === 'image/jpeg') {
+            return await stripGpsFromJpegBlob(injected);
+          }
+          return injected;
         }
         return rawBlob;
       } finally {
@@ -486,6 +540,8 @@ const BottomBar: React.FC<BottomBarProps> = ({
       fullImageData,
       getFullImageData,
       sourceMimeType,
+      textLayers,
+      metadataPrivacy,
       lastExportHeightRef,
       lastExportWidthRef,
     ],

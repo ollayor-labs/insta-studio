@@ -34,6 +34,7 @@ import {
   loadImportedImage,
 } from "@/lib/imageImport";
 import { readExifFromBlob } from "@/lib/exif";
+import { ImageHistory } from "@/lib/image-history";
 import RecentsList from "@/components/RecentsList";
 import type { RecentMeta } from "@/lib/recents";
 import { type ExportProfileId, buildExportReceipt } from "@/lib/export";
@@ -41,10 +42,13 @@ import DropZone from "@/components/DropZone";
 import { formatFileSize } from "@/lib/fileSize";
 import FilterSidebar from "@/components/FilterSidebar";
 import RawAdjustmentsPanel from "@/components/AdjustmentsPanel";
+import RawToolTabsPanel from "@/components/ToolTabsPanel";
 import RawImageCanvas from "@/components/ImageCanvas";
 import BottomBar from "@/components/BottomBar";
 import CropModal from "@/components/CropModal";
 import { DEFAULT_CROP_STATE, type CropState } from "@/lib/crop";
+import type { TextLayer } from "@/lib/text/types";
+import type { MetadataPrivacy } from "@/lib/metadata";
 import { Loader2 } from "lucide-react";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from "@/components/ui/drawer";
 
@@ -58,6 +62,7 @@ import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from 
 // changes but these props don't.
 const ImageCanvas = React.memo(RawImageCanvas);
 const AdjustmentsPanel = React.memo(RawAdjustmentsPanel);
+const ToolTabsPanel = React.memo(RawToolTabsPanel);
 const brandMarkSrc = "/brand/logo-mark.png";
 
 const TEXT_INPUT_TYPES = new Set([
@@ -93,6 +98,20 @@ const Index = () => {
   const [fileName, setFileName] = useState("");
   const [sourceMimeType, setSourceMimeType] = useState<string | null>(null);
   const [currentExifBytes, setCurrentExifBytes] = useState<Uint8Array | null>(null);
+  // Right-panel tool state (Phase 1/2 features).
+  const [metadataFile, setMetadataFile] = useState<Blob | null>(null);
+  const [metadataPrivacy, setMetadataPrivacy] = useState<MetadataPrivacy>("keep");
+  const [guidePlatform, setGuidePlatform] = useState<string | null>(null);
+  const [textLayers, setTextLayers] = useState<TextLayer[]>([]);
+  const [selectedTextId, setSelectedTextId] = useState<string | null>(null);
+  const [activeTool, setActiveTool] = useState<string>("tone");
+  // Subject alpha mask produced by the Cutout tool; reused by Blur's
+  // background mode. { data: 0..255 per pixel, w, h }.
+  const [subjectMask, setSubjectMask] = useState<{ data: Uint8Array; w: number; h: number } | null>(null);
+  // Parallel image undo stack — tracks source-image snapshots for
+  // destructive operations (cutout, blur) that bypass the main
+  // HistoryStore (which only holds filter/adjustment params).
+  const imageHistoryRef = useRef(new ImageHistory());
   const initialSnapshot: EditorSnapshot = {
     activeFilter: "Original",
     filterStrength: 100,
@@ -114,6 +133,13 @@ const Index = () => {
     reset: resetHistory,
   } = useHistory(initialSnapshot);
   const { activeFilter, filterStrength, effectIntensity, adjustments } = state;
+
+  // Derived undo/redo availability that accounts for BOTH the main
+  // HistoryStore (slider / filter adjustments) and the parallel
+  // image-history stack (cutout / blur).  The undo button should be
+  // enabled whenever *either* stack has an entry.
+  const canUndoAny = canUndo || imageHistoryRef.current.canUndo();
+  const canRedoAny = canRedo || imageHistoryRef.current.canRedo();
 
   const startAdjustmentDrag = useCallback(
     (kind: "strength" | "intensity" | "adjustment", key?: keyof Adjustments) => {
@@ -287,11 +313,20 @@ const Index = () => {
         effectIntensity: 100,
         adjustments: { ...defaultAdjustments },
       });
+      imageHistoryRef.current.reset();
       setViewMode("edited");
       setCompareMode(false);
       setComparePosition(50);
       setZoom(100);
       setCropState(DEFAULT_CROP_STATE);
+      // Reset per-image tool state and stash the source blob for the
+      // Metadata tool (exifr reads the original file, not the canvas).
+      setMetadataFile(blob);
+      setMetadataPrivacy("keep");
+      setGuidePlatform(null);
+      setTextLayers([]);
+      setSelectedTextId(null);
+      setSubjectMask(null);
       // Fire-and-forget: storing in IndexedDB should never block the editor
       // from showing the new image. Errors are swallowed so a quota-exceeded
       // browser doesn't break the import flow. We also pull the EXIF TIFF
@@ -311,6 +346,51 @@ const Index = () => {
   );
 
   
+
+  // Replace the editor's working image with a canvas produced by a tool
+  // (Cutout / Blur). Setting `image` re-derives sourceImageData, the full
+  // raster, and analysis via useFilter + the analysis effect, while the
+  // current filter/adjustment state is preserved and re-applied on top.
+  // Snapshots the *current* image into the parallel image-history stack
+  // before replacing so the destructive edit can be undone.
+  const replaceSourceImage = useCallback(
+    (
+      canvas: HTMLCanvasElement,
+      opts?: { asPng?: boolean; historyLabel?: string; historyKind?: "cutout" | "blur" | "other" },
+    ) => {
+      // Snapshot the current source image before overwriting.
+      if (image && opts?.historyLabel) {
+        const prevDataUrl = image.src;
+        imageHistoryRef.current.push(prevDataUrl, opts.historyLabel, opts.historyKind ?? "other");
+      }
+      const dataUrl = canvas.toDataURL("image/png");
+      const img = new Image();
+      img.onload = () => setImage(img);
+      img.src = dataUrl;
+      if (opts?.asPng) {
+        // A transparent cutout must export as PNG; drop stale EXIF too.
+        setSourceMimeType("image/png");
+        setCurrentExifBytes(null);
+        setMetadataFile(null);
+      }
+    },
+    [image],
+  );
+
+  const handleCutoutApply = useCallback(
+    (result: { canvas: HTMLCanvasElement; mask: Uint8Array; maskW: number; maskH: number }) => {
+      setSubjectMask({ data: result.mask, w: result.maskW, h: result.maskH });
+      replaceSourceImage(result.canvas, { asPng: true, historyLabel: "Cutout applied", historyKind: "cutout" });
+    },
+    [replaceSourceImage],
+  );
+
+  const handleBlurApply = useCallback(
+    (canvas: HTMLCanvasElement) => {
+      replaceSourceImage(canvas, { historyLabel: "Blur applied", historyKind: "blur" });
+    },
+    [replaceSourceImage],
+  );
 
   const startImport = useCallback(
     async (file: File) => {
@@ -529,19 +609,64 @@ const Index = () => {
   // Wrap the history undo/redo so they also fire a small toast
   // showing what was undone / redone. The label comes from the
   // most recent history entry (the one that was just consumed).
+  //
+  // The image-history stack (cutout / blur) runs parallel to the
+  // main HistoryStore (slider / filter adjustments).  On undo we
+  // compare timestamps and pop from whichever stack has the
+  // *most-recent* entry so the user gets a single, chronologically
+  // correct undo button regardless of operation type.
   const handleUndo = useCallback(() => {
-    if (!canUndo) return;
-    const label = past[past.length - 1]?.label ?? null;
-    undo();
-    showUndoToast(label);
-  }, [canUndo, past, undo]);
+    const mainEntry = canUndo ? past[past.length - 1] : null;
+    const imgEntry = imageHistoryRef.current.peekUndo();
+
+    // Neither stack has anything — nothing to undo.
+    if (!mainEntry && !imgEntry) return;
+
+    // Decide which stack to pop: the one with the newer timestamp.
+    const useImage =
+      imgEntry !== null && (mainEntry === null || imgEntry.timestamp > mainEntry.timestamp);
+
+    if (useImage) {
+      // Restore the source image from the data-URL snapshot.
+      const currentSrc = image?.src ?? "";
+      const restored = imageHistoryRef.current.popUndo(currentSrc);
+      if (restored) {
+        const img = new Image();
+        img.onload = () => setImage(img);
+        img.src = restored.dataUrl;
+        showUndoToast(restored.label);
+      }
+    } else {
+      const label = mainEntry?.label ?? null;
+      undo();
+      showUndoToast(label);
+    }
+  }, [canUndo, past, undo, image]);
 
   const handleRedo = useCallback(() => {
-    if (!canRedo) return;
-    const label = future[future.length - 1]?.label ?? null;
-    redo();
-    showRedoToast(label);
-  }, [canRedo, future, redo]);
+    const mainEntry = canRedo ? future[future.length - 1] : null;
+    const imgEntry = imageHistoryRef.current.peekRedo();
+
+    if (!mainEntry && !imgEntry) return;
+
+    const useImage =
+      imgEntry !== null && (mainEntry === null || imgEntry.timestamp > mainEntry.timestamp);
+
+    if (useImage) {
+      const currentSrc = image?.src ?? "";
+      const restored = imageHistoryRef.current.popRedo(currentSrc);
+      if (restored) {
+        const img = new Image();
+        img.onload = () => setImage(img);
+        img.src = restored.dataUrl;
+        showRedoToast(restored.label);
+      }
+    } else {
+      const label = mainEntry?.label ?? null;
+      redo();
+      showRedoToast(label);
+    }
+  }, [canRedo, future, redo, image]);
 
   const handlePlayReveal = useCallback(() => {
     if (!image) return;
@@ -917,6 +1042,11 @@ const Index = () => {
               setFileName("");
               setSourceMimeType(null);
               setCurrentExifBytes(null);
+              setMetadataFile(null);
+              setTextLayers([]);
+              setSelectedTextId(null);
+              setGuidePlatform(null);
+              setSubjectMask(null);
             }}
             className="font-mono-ui text-[11px] text-muted-foreground hover:text-foreground transition-colors ml-4"
           >
@@ -958,10 +1088,20 @@ const Index = () => {
           backendStatus={backendStatus}
           studioBackendStatus={studioBackendStatus}
           sourceAnalysis={imageAnalysis}
+          cropBox={cropState.box}
+          cropActive={activeTool === "crop"}
+          guidePlatform={guidePlatform}
+          textLayers={textLayers}
+          selectedTextId={selectedTextId}
+          onSelectText={setSelectedTextId}
+          onChangeTextLayer={(layer) =>
+            setTextLayers((prev) => prev.map((l) => (l.id === layer.id ? layer : l)))
+          }
+          textActive={activeTool === "text"}
         />
 
         <div className="w-64 lg:w-80 border-l border-border shrink-0 overflow-hidden hidden md:block">
-          <AdjustmentsPanel
+          <ToolTabsPanel
             activePreset={activePreset}
             recommendation={activeRecommendation}
             adjustments={adjustments}
@@ -975,6 +1115,23 @@ const Index = () => {
             canSavePreset={customPresetsReady}
             sceneMode={sceneMode}
             onSceneModeChange={setSceneMode}
+            sourceImage={image}
+            cropState={cropState}
+            onCropChange={setCropState}
+            onOpenCropEditor={() => setCropModalOpen(true)}
+            textLayers={textLayers}
+            selectedTextId={selectedTextId}
+            onSelectText={setSelectedTextId}
+            onTextLayersChange={setTextLayers}
+            guidePlatform={guidePlatform}
+            onGuideChange={setGuidePlatform}
+            onCutoutApply={handleCutoutApply}
+            subjectMask={subjectMask}
+            onBlurApply={handleBlurApply}
+            metadataFile={metadataFile}
+            metadataPrivacy={metadataPrivacy}
+            onMetadataPrivacyChange={setMetadataPrivacy}
+            onActiveToolChange={setActiveTool}
           />
         </div>
       </div>
@@ -1016,6 +1173,8 @@ const Index = () => {
         fileName={fileName}
         sourceMimeType={sourceMimeType}
         currentExifBytes={currentExifBytes}
+        textLayers={textLayers}
+        metadataPrivacy={metadataPrivacy}
         viewMode={viewMode}
         onViewModeChange={setViewMode}
         compareMode={compareMode}
@@ -1025,8 +1184,8 @@ const Index = () => {
         zoom={zoom}
         onZoomChange={setZoom}
         exportSignal={exportSignal}
-        canUndo={canUndo}
-        canRedo={canRedo}
+        canUndo={canUndoAny}
+        canRedo={canRedoAny}
         onUndo={handleUndo}
         onRedo={handleRedo}
         cropState={cropState}
