@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { Clock, Trash2, X } from "lucide-react";
 import type { RecentMeta } from "@/lib/recents";
+import { cuePressRelease } from "@/lib/sound/sound-cues";
 
 interface RecentsListProps {
   recents: RecentMeta[];
@@ -74,6 +75,7 @@ const RecentsList: React.FC<RecentsListProps> = ({ recents, isReady, onSelect, o
           type="button"
           onClick={onClear}
           className="flex items-center gap-1 font-mono-ui text-[10px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground transition-colors"
+          {...cuePressRelease}
         >
           <Trash2 className="w-3 h-3" />
           Clear
@@ -93,6 +95,7 @@ const RecentsList: React.FC<RecentsListProps> = ({ recents, isReady, onSelect, o
                 className="block h-full w-full"
                 title={`${record.name} \u00b7 ${formatRelativeTime(record.addedAt, now)}`}
                 aria-label={`Open ${record.name}`}
+                {...cuePressRelease}
               >
                 {url ? (
                   <img
@@ -118,6 +121,7 @@ const RecentsList: React.FC<RecentsListProps> = ({ recents, isReady, onSelect, o
                 onClick={() => onRemove(record.id)}
                 className="absolute right-1 top-1 hidden h-6 w-6 items-center justify-center rounded-full bg-background/85 text-muted-foreground shadow-sm backdrop-blur transition-colors hover:text-foreground group-hover:flex"
                 aria-label={`Remove ${record.name} from recents`}
+                {...cuePressRelease}
               >
                 <X className="h-3 w-3" />
               </button>

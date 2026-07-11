@@ -40,10 +40,12 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, size, asChild = false, ...props }, ref) => {
     const Comp = asChild ? Slot : 'button';
     // Every button gets a soft press/release cue (mouse pointers only;
-    // cuelume ignores touch). Override with a different data-cuelume-* attr.
-    const cueProps = props["data-cuelume-press"] === undefined && props["data-cuelume-toggle"] === undefined
-      ? { "data-cuelume-press": "", "data-cuelume-release": "" }
-      : {};
+    // cuelume ignores touch). Skip when the caller set their own
+    // data-cuelume-* behavior or opted out with data-cuelume-disabled.
+    const hasCueAttr = Object.keys(props).some((key) =>
+      key === "data-cuelume-disabled" || key.startsWith("data-cuelume-"),
+    );
+    const cueProps = hasCueAttr ? {} : { "data-cuelume-press": "", "data-cuelume-release": "" };
     return (
       <Comp
         className={cn(buttonVariants({ variant, size, className }))}

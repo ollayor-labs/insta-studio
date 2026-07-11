@@ -4,6 +4,7 @@ import { type VariantProps } from "class-variance-authority";
 
 import { cn } from "@/lib/utils";
 import { toggleVariants } from "@/components/ui/toggle";
+import { cueToggle } from "@/lib/sound/sound-cues";
 
 const ToggleGroupContext = React.createContext<VariantProps<typeof toggleVariants>>({
   size: "default",
@@ -37,6 +38,7 @@ const ToggleGroupItem = React.forwardRef<
         }),
         className,
       )}
+      {...cueToggle}
       {...props}
     >
       {children}

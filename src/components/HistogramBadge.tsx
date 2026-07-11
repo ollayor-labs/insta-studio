@@ -2,6 +2,7 @@ import React, { useMemo, useState } from "react";
 import { BarChart3 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
+import { cuePressRelease, cueToggle } from "@/lib/sound/sound-cues";
 import type { ChannelHistogram, ClippingChannels, Histogram } from "@/lib/filterEngine";
 
 interface HistogramBadgeProps {
@@ -101,6 +102,7 @@ const HistogramBadge: React.FC<HistogramBadgeProps> = ({
           )}
           aria-label="Toggle histogram"
           title="Histogram"
+          {...cueToggle}
         >
           <BarChart3 className="h-3.5 w-3.5" />
         </button>
@@ -156,6 +158,7 @@ const HistogramBadge: React.FC<HistogramBadgeProps> = ({
                 setExpanded(false);
               }}
               className="font-mono-ui text-[10px] uppercase tracking-[0.18em] text-muted-foreground hover:text-foreground"
+              {...cuePressRelease}
             >
               Close
             </button>

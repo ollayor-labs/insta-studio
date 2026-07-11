@@ -429,7 +429,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
   // output dimensions (which can differ from the source if the
   // profile capped the longest edge).
   const renderExportBlob = useCallback(
-    async (targetFormat: ExportFormat, targetSize: ExportSize, targetQuality: number, withWatermark: boolean) => {
+    async (targetFormat: ExportFormat, targetSize: ExportSize, targetQuality: number, withWatermark: boolean, renderOptions: { consumer?: string } = {}) => {
       // The full-resolution raster is now lazy. The hook
       // materializes it on first call and caches it for the
       // lifetime of the current image; the second export reuses
@@ -454,7 +454,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
           analysis ?? undefined,
         );
 
-        const filtered = await renderFilterOnWorker(fullRaster, settings);
+        const filtered = await renderFilterOnWorker(fullRaster, settings, { consumer: renderOptions.consumer ?? 'export' });
 
         // Apply EXIF orientation. The re-injection below still
         // tags the file with the original orientation; downstream
@@ -560,9 +560,15 @@ const BottomBar: React.FC<BottomBarProps> = ({
 
       const link = document.createElement('a');
       link.download = exportName;
-      link.href = URL.createObjectURL(blob);
+      const url = URL.createObjectURL(blob);
+      link.href = url;
+      link.onclick = () => {
+        // Revoke after the browser has had a tick to start the download.
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      };
+      // Safety net: revoke even if onclick doesn't fire (download blocked).
+      window.setTimeout(() => URL.revokeObjectURL(url), 60000);
       link.click();
-      window.setTimeout(() => URL.revokeObjectURL(link.href), 1000);
       // The receipt toast is fired by the page (so the user sees it
       // alongside the history write); we just notify the page that
       // an export succeeded with everything it needs.
@@ -588,10 +594,17 @@ const BottomBar: React.FC<BottomBarProps> = ({
     size,
     sourceMimeType,
     onExportSuccess,
+    play,
   ]);
 
   const handleCopy = useCallback(async () => {
-    const blob = await renderExportBlob('png', 'original', 100, false);
+    let blob: Blob | null = null;
+    try {
+      blob = await renderExportBlob('png', 'original', 100, false, { consumer: 'copy' });
+    } catch (error) {
+      console.error('Copy render failed', error);
+      return;
+    }
     if (!blob) return;
 
     setCopying(true);

@@ -3,6 +3,7 @@ import { History, Trash2, X } from "lucide-react";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { type ExportHistoryRecord } from "@/lib/export";
+import { cuePressRelease } from "@/lib/sound/sound-cues";
 
 interface RecentExportsMenuProps {
   history: ExportHistoryRecord[];
@@ -83,6 +84,7 @@ const RecentExportsMenu: React.FC<RecentExportsMenuProps> = ({
                 type="button"
                 disabled={disabled}
                 className="relative flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 font-mono-ui text-[10px] uppercase tracking-[0.14em] text-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                {...cuePressRelease}
               >
                 <History className="h-3 w-3" />
                 <span className="hidden sm:inline">Exports</span>
@@ -114,6 +116,7 @@ const RecentExportsMenu: React.FC<RecentExportsMenuProps> = ({
               type="button"
               onClick={onClear}
               className="flex items-center gap-1 font-mono-ui text-[10px] uppercase tracking-[0.14em] text-muted-foreground hover:text-foreground"
+              {...cuePressRelease}
             >
               <Trash2 className="h-3 w-3" />
               Clear
@@ -143,6 +146,7 @@ const RecentExportsMenu: React.FC<RecentExportsMenuProps> = ({
                     }}
                     className="flex flex-1 items-center gap-2 text-left"
                     title={`Re-apply ${record.profileLabel} settings`}
+                    {...cuePressRelease}
                   >
                     <div className="h-10 w-10 shrink-0 overflow-hidden rounded-md border border-border bg-secondary/40">
                       {url ? (
@@ -177,6 +181,7 @@ const RecentExportsMenu: React.FC<RecentExportsMenuProps> = ({
                     onClick={() => onRemove(record.id)}
                     aria-label={`Remove ${record.fileName}`}
                     className="hidden h-6 w-6 items-center justify-center rounded-full text-muted-foreground hover:bg-background/80 hover:text-foreground group-hover:flex"
+                    {...cuePressRelease}
                   >
                     <X className="h-3 w-3" />
                   </button>

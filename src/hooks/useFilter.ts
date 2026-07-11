@@ -137,7 +137,7 @@ export function useFilter({
   const hasLoggedBackendRef = useRef(false);
   const hasWarnedContextLossRef = useRef(false);
   const wasDegradedRef = useRef(false);
-  const latestRequestRef = useRef(0);
+  const latestRequestRef = useRef<Record<string, number>>({ preview: 0, studio: 0 });
 
   // Preview renders feel best with a tight 16 ms debounce so sliders stay
   // responsive. Export renders (full-resolution, used by the bottom bar's
@@ -250,8 +250,7 @@ export function useFilter({
       return;
     }
 
-    const requestId = latestRequestRef.current + 1;
-    latestRequestRef.current = requestId;
+    const requestId = (latestRequestRef.current.preview += 1);
     setIsProcessing(true);
 
     let cancelled = false;
@@ -267,7 +266,7 @@ export function useFilter({
       targetCanvas: previewCanvasRef?.current ?? null,
     })
       .then((result) => {
-        if (cancelled || requestId !== latestRequestRef.current) return;
+        if (cancelled || requestId !== latestRequestRef.current.preview) return;
         setFilteredImageData(result);
         const kind = getConsumerBackendKind("preview");
         if (kind === "webgl" || kind === "js") {
@@ -283,12 +282,12 @@ export function useFilter({
         }
       })
       .catch((error: unknown) => {
-        if (cancelled || requestId !== latestRequestRef.current) return;
+        if (cancelled || requestId !== latestRequestRef.current.preview) return;
         console.error("Filter render failed", error);
         setFilteredImageData(null);
       })
       .finally(() => {
-        if (cancelled || requestId !== latestRequestRef.current) return;
+        if (cancelled || requestId !== latestRequestRef.current.preview) return;
         setIsProcessing(false);
       });
 
@@ -314,8 +313,7 @@ export function useFilter({
     if (viewMode !== "studio" || !sourceImageData) {
       return;
     }
-    const requestId = latestRequestRef.current + 1;
-    latestRequestRef.current = requestId;
+    const requestId = (latestRequestRef.current.studio += 1);
     setStudioIsProcessing(true);
     let cancelled = false;
     const renderSettings = studioSettings;
@@ -325,7 +323,7 @@ export function useFilter({
       targetCanvas: studioCanvasRef?.current ?? null,
     })
       .then((result) => {
-        if (cancelled || requestId !== latestRequestRef.current) return;
+        if (cancelled || requestId !== latestRequestRef.current.studio) return;
         setStudioImageData(result);
         const kind = getConsumerBackendKind("studio");
         if (kind === "webgl" || kind === "js") {
@@ -341,12 +339,12 @@ export function useFilter({
         }
       })
       .catch((error: unknown) => {
-        if (cancelled || requestId !== latestRequestRef.current) return;
+        if (cancelled || requestId !== latestRequestRef.current.studio) return;
         console.error("Studio render failed", error);
         setStudioImageData(null);
       })
       .finally(() => {
-        if (cancelled || requestId !== latestRequestRef.current) return;
+        if (cancelled || requestId !== latestRequestRef.current.studio) return;
         setStudioIsProcessing(false);
       });
     return () => {

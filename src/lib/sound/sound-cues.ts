@@ -1,5 +1,4 @@
 export type CueName =
-  | "idle"
   | "chime"
   | "sparkle"
   | "droplet"

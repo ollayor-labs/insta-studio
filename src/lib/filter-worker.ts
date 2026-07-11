@@ -308,7 +308,7 @@ export function renderFilterOnWorker(
   const init: BackendFactoryInit = { targetCanvas: options.targetCanvas ?? null };
   return new Promise<ImageData>((resolve, reject) => {
     const job: RenderJob = {
-      id: broker.nextId,
+      id: broker.nextId++,
       source: sourceData,
       settings,
       userAdjustments: options.userAdjustments,
@@ -316,7 +316,6 @@ export function renderFilterOnWorker(
       reject,
       cancelled: false,
     };
-    broker.nextId += 1;
 
     const entry = getOrCreateConsumerEntry(consumer, settings, options.userAdjustments, init);
 
@@ -324,8 +323,11 @@ export function renderFilterOnWorker(
     // on this entry, cancel it (the backend short-circuits) and
     // replace with the new one.
     if (entry.inFlight) {
-      entry.inFlight.cancelled = true;
+      const stale = entry.inFlight;
+      stale.cancelled = true;
       entry.backend.cancel();
+      entry.inFlight = null;
+      stale.reject(new Error("superseded"));
     }
     entry.inFlight = job;
 
@@ -362,17 +364,21 @@ export function cancelPendingFilterRenders(consumer?: string): void {
   if (consumer) {
     const entry = broker.byConsumer.get(consumer);
     if (entry?.inFlight) {
-      entry.inFlight.cancelled = true;
+      const job = entry.inFlight;
+      job.cancelled = true;
       entry.backend.cancel();
       entry.inFlight = null;
+      job.reject(new Error("cancelled"));
     }
     return;
   }
   for (const entry of broker.byConsumer.values()) {
     if (entry.inFlight) {
-      entry.inFlight.cancelled = true;
+      const job = entry.inFlight;
+      job.cancelled = true;
       entry.backend.cancel();
       entry.inFlight = null;
+      job.reject(new Error("cancelled"));
     }
   }
 }

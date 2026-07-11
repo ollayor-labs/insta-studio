@@ -164,7 +164,7 @@ describe('filter worker broker', () => {
     let p1Resolved = false;
     void renderFilterOnWorker(fakeImageData(), fakeSettings('a')).then(() => {
       p1Resolved = true;
-    });
+    }).catch(() => {});
     const p2 = renderFilterOnWorker(fakeImageData(), fakeSettings('b'));
     await flushPromises();
     expect(backends).toHaveLength(1);
@@ -186,7 +186,7 @@ describe('filter worker broker', () => {
     let latestResolved = false;
     void renderFilterOnWorker(fakeImageData(), fakeSettings('first')).then(() => {
       firstResolved = true;
-    });
+    }).catch(() => {});
     const latest = renderFilterOnWorker(fakeImageData(), fakeSettings('latest')).then(() => {
       latestResolved = true;
     });
@@ -209,7 +209,7 @@ describe('filter worker broker', () => {
     let resolved = false;
     void renderFilterOnWorker(fakeImageData(), fakeSettings('a')).then(() => {
       resolved = true;
-    });
+    }).catch(() => {});
     await flushPromises();
     cancelPendingFilterRenders();
     backends[0].respondAt(0);
@@ -249,8 +249,8 @@ describe('filter worker broker', () => {
     setPreviewBackendPolicy(makePolicy('js'));
 
     const results: string[] = [];
-    void renderFilterOnWorker(fakeImageData(), fakeSettings('a')).then(() => results.push('a'));
-    void renderFilterOnWorker(fakeImageData(), fakeSettings('b')).then(() => results.push('b'));
+    void renderFilterOnWorker(fakeImageData(), fakeSettings('a')).then(() => results.push('a')).catch(() => {});
+    void renderFilterOnWorker(fakeImageData(), fakeSettings('b')).then(() => results.push('b')).catch(() => {});
     const p3 = renderFilterOnWorker(fakeImageData(), fakeSettings('c')).then(() => results.push('c'));
     await flushPromises();
     expect(backends[0].calls).toHaveLength(3);
@@ -318,7 +318,7 @@ describe('filter worker broker (per-consumer worker pools)', () => {
     let latestResolved = false;
     void renderFilterOnWorker(fakeImageData(), fakeSettings('first'), { consumer: 'preview' }).then(() => {
       firstResolved = true;
-    });
+    }).catch(() => {});
     const latest = renderFilterOnWorker(fakeImageData(), fakeSettings('latest'), { consumer: 'preview' }).then(() => {
       latestResolved = true;
     });
@@ -339,6 +339,7 @@ describe('filter worker broker (per-consumer worker pools)', () => {
     setPreviewBackendPolicy(makePolicy('js'));
 
     const previewP = renderFilterOnWorker(fakeImageData(), fakeSettings('a'), { consumer: 'preview' });
+    void previewP.catch(() => {});
     const studioP = renderFilterOnWorker(fakeImageData(), fakeSettings('b'), { consumer: 'studio' });
     await flushPromises();
     expect(backends).toHaveLength(2);
@@ -353,7 +354,7 @@ describe('filter worker broker (per-consumer worker pools)', () => {
     let previewResolved = false;
     void previewP.then(() => {
       previewResolved = true;
-    });
+    }).catch(() => {});
     await flushPromises();
     expect(previewResolved).toBe(false);
   });

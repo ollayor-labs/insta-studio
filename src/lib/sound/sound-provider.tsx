@@ -5,7 +5,6 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -39,7 +38,6 @@ function readStored(): boolean | null {
 
 export function SoundProvider({ children }: { children: ReactNode }) {
   const prefersReducedMotion = usePrefersReducedMotion();
-  const hasStoredPref = useRef(readStored() !== null);
   const [enabled, setEnabledState] = useState<boolean>(() => {
     const stored = readStored();
     if (stored !== null) return stored;
@@ -59,11 +57,14 @@ export function SoundProvider({ children }: { children: ReactNode }) {
   // Respect a system-level "reduce motion" request — but only when the
   // user hasn't made an explicit choice, so an opt-in still honored.
   useEffect(() => {
-    if (prefersReducedMotion && !hasStoredPref.current) setEnabledState(false);
+    if (prefersReducedMotion && readStored() === null) setEnabledState(false);
   }, [prefersReducedMotion]);
 
   const setEnabled = useCallback((value: boolean) => {
     setEnabledState(value);
+    // Sync cuelume synchronously so the toggle's own click cue is audible
+    // on the same gesture that re-enables sound.
+    setCuelumeEnabled(value);
     try {
       localStorage.setItem(STORAGE_KEY, value ? "on" : "off");
     } catch {

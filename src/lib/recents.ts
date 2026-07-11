@@ -6,7 +6,7 @@
 import { createThumbnail } from "@/lib/thumbnail";
 
 const DB_NAME = "filtr-studio";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_NAME = "recents";
 const MAX_RECENTS = 12;
 

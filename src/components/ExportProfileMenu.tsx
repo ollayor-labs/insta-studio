@@ -11,6 +11,7 @@ import {
   getExportProfile,
   type ExportProfileId,
 } from "@/lib/export";
+import { cuePressRelease, cueToggle } from "@/lib/sound/sound-cues";
 
 interface ExportProfileMenuProps {
   activeProfileId: ExportProfileId;
@@ -66,6 +67,7 @@ const ExportProfileMenu: React.FC<ExportProfileMenuProps> = ({
                 type="button"
                 disabled={disabled}
                 className="flex h-7 items-center gap-1.5 rounded-md border border-border bg-background px-2 font-mono-ui text-[10px] uppercase tracking-[0.14em] text-foreground transition-colors hover:border-primary/40 hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+                {...cuePressRelease}
               >
                 <Settings2 className="h-3 w-3" />
                 <span className="hidden sm:inline">{activeProfile.label}</span>
@@ -110,6 +112,7 @@ const ExportProfileMenu: React.FC<ExportProfileMenuProps> = ({
                     : "hover:bg-secondary/50"
                 }`}
                 aria-pressed={active}
+                {...cueToggle}
               >
                 <div className="mt-0.5">
                   {active ? (

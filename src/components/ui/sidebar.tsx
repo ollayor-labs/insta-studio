@@ -6,6 +6,7 @@ import { PanelLeft } from 'lucide-react';
 
 import { useIsMobile } from '@/hooks/use-mobile';
 import { cn } from '@/lib/utils';
+import { cueToggle } from '@/lib/sound/sound-cues';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
@@ -263,6 +264,7 @@ const SidebarRail = React.forwardRef<HTMLButtonElement, React.ComponentProps<'bu
           '[[data-side=right][data-collapsible=offcanvas]_&]:-left-2',
           className,
         )}
+        {...cueToggle}
         {...props}
       />
     );
