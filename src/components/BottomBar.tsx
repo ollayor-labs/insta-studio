@@ -25,6 +25,8 @@ import {
 } from '@/lib/export';
 import ExportProfileMenu from '@/components/ExportProfileMenu';
 import RecentExportsMenu from '@/components/RecentExportsMenu';
+import { useSound } from '@/lib/sound/sound-provider';
+import { cuePressRelease, cueToggle } from '@/lib/sound/sound-cues';
 
 type ExportSize = 'original' | '2x' | '50%';
 type ExportFormat = 'jpeg' | 'png' | 'webp' | 'original';
@@ -389,6 +391,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
   onExportHistoryOpenChange,
   onExportSuccess,
 }) => {
+  const { play } = useSound();
   const [size, setSize] = useState<ExportSize>('original');
   const [format, setFormat] = useState<ExportFormat>('jpeg');
   const [copying, setCopying] = useState(false);
@@ -573,6 +576,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
         quality: profile.id === 'custom' ? 95 : profile.quality,
         watermark: false,
       });
+      play('success');
     } catch (error) {
       console.error('Export failed', error);
     }
@@ -634,6 +638,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
                 aria-checked={active}
                 title={fullLabel}
                 onClick={() => onViewModeChange(entry.value)}
+                {...cuePressRelease}
                 className={`flex h-6 w-7 items-center justify-center rounded-full transition-colors ${
                   active ? 'bg-primary/15 text-primary' : 'text-muted-foreground hover:text-foreground'
                 }`}
@@ -654,6 +659,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
           aria-label="Undo"
           title={isMacPlatform() ? 'Undo (⌘Z)' : 'Undo (Ctrl+Z)'}
           data-testid="undo-button"
+          {...cuePressRelease}
           className="flex items-center gap-1.5 font-mono-ui text-[11px] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
         >
           <Undo2 className="w-3.5 h-3.5" />
@@ -666,6 +672,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
           aria-label="Redo"
           title={isMacPlatform() ? 'Redo (⇧⌘Z)' : 'Redo (Ctrl+Shift+Z)'}
           data-testid="redo-button"
+          {...cuePressRelease}
           className="flex items-center gap-1.5 font-mono-ui text-[11px] text-muted-foreground hover:text-foreground transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground"
         >
           <Redo2 className="w-3.5 h-3.5" />
@@ -677,6 +684,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
           className={`flex items-center gap-1.5 font-mono-ui text-[11px] transition-colors ${
             compareMode ? 'text-primary' : 'text-muted-foreground hover:text-foreground'
           }`}
+          {...cueToggle}
         >
           <SplitSquareVertical className="w-3.5 h-3.5" />
           Compare
@@ -691,6 +699,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
               : 'text-muted-foreground hover:text-foreground disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted-foreground'
           }`}
           title="Play an animated before/after reveal (Shift+C)"
+          {...cuePressRelease}
         >
           <Play className="w-3.5 h-3.5" />
           <SlotLabel
@@ -717,6 +726,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
         <button
           onClick={() => onZoomChange(Math.max(25, zoom - 25))}
           className="text-muted-foreground hover:text-foreground transition-colors"
+          {...cuePressRelease}
         >
           <ZoomOut className="w-3.5 h-3.5" />
         </button>
@@ -726,6 +736,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
         <button
           onClick={() => onZoomChange(Math.min(400, zoom + 25))}
           className="text-muted-foreground hover:text-foreground transition-colors"
+          {...cuePressRelease}
         >
           <ZoomIn className="w-3.5 h-3.5" />
         </button>
@@ -760,6 +771,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
           onClick={onOpenCropModal}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border bg-background text-foreground hover:border-primary/40 hover:text-primary transition-colors font-mono-ui text-[11px]"
           title="Crop (K)"
+          {...cuePressRelease}
         >
           <Crop className="w-3 h-3" />
           <SlotLabel
@@ -796,6 +808,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
           onClick={handleCopy}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-secondary text-secondary-foreground hover:bg-muted transition-colors font-mono-ui text-[11px]"
           disabled={copying || exporting}
+          {...cuePressRelease}
         >
           <Copy className="w-3 h-3" />
           <SlotLabel text={copying ? 'Copied' : 'Copy'} flashColor={copying} tone="muted" />
@@ -805,6 +818,7 @@ const BottomBar: React.FC<BottomBarProps> = ({
           onClick={() => void handleDownload()}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-primary text-primary-foreground hover:opacity-90 transition-opacity font-mono-ui text-[11px]"
           disabled={exporting}
+          {...cuePressRelease}
         >
           <Download className="w-3 h-3" />
           <SlotLabel

@@ -3,6 +3,7 @@ import { BookmarkPlus, Check, RotateCcw } from "lucide-react";
 import type { Adjustments, FilterPreset, PresetRecommendation } from "@/lib/filterEngine";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useSound } from "@/lib/sound/sound-provider";
 
 type SceneMode = "adaptive" | "studio";
 
@@ -128,11 +129,13 @@ const AdjustmentsPanel: React.FC<AdjustmentsPanelProps> = ({
 }) => {
   const [saveName, setSaveName] = useState("");
   const [savedFlash, setSavedFlash] = useState(false);
+  const { play } = useSound();
   const handleSave = () => {
     const trimmed = saveName.trim() || `Custom ${activePreset.name}`;
     onSavePreset(trimmed);
     setSaveName("");
     setSavedFlash(true);
+    play("success");
     window.setTimeout(() => setSavedFlash(false), 1200);
   };
   return (

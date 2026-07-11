@@ -39,7 +39,19 @@ export interface ButtonProps
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, variant, size, asChild = false, ...props }, ref) => {
     const Comp = asChild ? Slot : 'button';
-    return <Comp className={cn(buttonVariants({ variant, size, className }))} ref={ref} {...props} />;
+    // Every button gets a soft press/release cue (mouse pointers only;
+    // cuelume ignores touch). Override with a different data-cuelume-* attr.
+    const cueProps = props["data-cuelume-press"] === undefined && props["data-cuelume-toggle"] === undefined
+      ? { "data-cuelume-press": "", "data-cuelume-release": "" }
+      : {};
+    return (
+      <Comp
+        className={cn(buttonVariants({ variant, size, className }))}
+        ref={ref}
+        {...cueProps}
+        {...props}
+      />
+    );
   },
 );
 Button.displayName = 'Button';

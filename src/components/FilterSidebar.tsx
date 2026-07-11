@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef } from "react";
 import type { FavoritesMap, FavoriteSlot } from "@/lib/filterEngine";
 import { Trash2 } from "lucide-react";
+import { cuePressRelease } from "@/lib/sound/sound-cues";
 import {
   customPresetsToDefinitions,
   FILTER_PRESETS,
@@ -135,6 +136,7 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
               : preset.name
           }
           className="flex w-full flex-col text-left"
+          {...cuePressRelease}
         >
           <div className="relative">
             <canvas
@@ -184,6 +186,7 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
             }}
             aria-label={`Delete preset ${preset.name}`}
             className="absolute bottom-1 right-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-background/85 text-muted-foreground opacity-0 transition-opacity hover:text-destructive group-hover:opacity-100"
+            {...cuePressRelease}
           >
             <Trash2 className="h-3 w-3" />
           </button>

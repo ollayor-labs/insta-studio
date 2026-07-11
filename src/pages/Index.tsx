@@ -39,6 +39,7 @@ import RecentsList from "@/components/RecentsList";
 import type { RecentMeta } from "@/lib/recents";
 import { type ExportProfileId, buildExportReceipt } from "@/lib/export";
 import DropZone from "@/components/DropZone";
+import { SoundToggle } from "@/components/SoundToggle";
 import { formatFileSize } from "@/lib/fileSize";
 import FilterSidebar from "@/components/FilterSidebar";
 import RawAdjustmentsPanel from "@/components/AdjustmentsPanel";
@@ -1036,6 +1037,7 @@ const Index = () => {
             </div>
           ) : null}
           <span className="font-mono-ui text-[11px] text-primary">{activeFilter}</span>
+          <SoundToggle />
           <button
             onClick={() => {
               setImage(null);
@@ -1049,9 +1051,11 @@ const Index = () => {
               setSubjectMask(null);
             }}
             className="font-mono-ui text-[11px] text-muted-foreground hover:text-foreground transition-colors ml-4"
+            data-cuelume-press=""
+            data-cuelume-release=""
           >
-            New Image
-          </button>
+             New Image
+           </button>
         </div>
       </header>
 
