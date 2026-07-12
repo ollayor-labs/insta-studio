@@ -152,9 +152,9 @@ self.onmessage = async (event: MessageEvent) => {
 
       const rawImage = await rawImageFromBitmap(bitmap);
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       const inputs = await processor(rawImage);
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+       
       const output = await model(inputs);
 
       const mask = await maskFromOutput(output, width, height);

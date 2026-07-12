@@ -210,7 +210,7 @@ export function subscribeToWebGlDegraded(callback: (degraded: boolean) => void):
   try {
     callback(webglDegraded);
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.error("[webgl-preview] subscribeToWebGlDegraded bootstrap threw", err);
   }
   return () => {

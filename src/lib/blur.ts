@@ -118,8 +118,8 @@ function gaussianBlurImageData(image: ImageData, sigmaPx: number): ImageData {
   if (radius <= 0 || w === 0 || h === 0) {
     return new ImageData(new Uint8ClampedArray(image.data), w, h);
   }
-  let a = new Uint8ClampedArray(image.data);
-  let b = new Uint8ClampedArray(a.length);
+  const a = new Uint8ClampedArray(image.data);
+  const b = new Uint8ClampedArray(a.length);
   // Three passes of separable box blur (H then V each) ≈ Gaussian.
   for (let pass = 0; pass < 3; pass++) {
     boxBlurH(a, b, w, h, radius);

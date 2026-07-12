@@ -20,11 +20,6 @@ function isFullImage(box: CropBox): boolean {
 const CropFrameOverlay: React.FC<CropFrameOverlayProps> = ({ box, active }) => {
   if (!active && isFullImage(box)) return null;
 
-  const insetY = box.y * 100;
-  const insetX = box.x * 100;
-  const rightInset = 100 - (box.x + box.w) * 100;
-  const bottomInset = 100 - (box.y + box.h) * 100;
-
   const frameStyle: React.CSSProperties = {
     left: `${box.x * 100}%`,
     top: `${box.y * 100}%`,

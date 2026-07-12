@@ -339,7 +339,7 @@ const ImageCanvas: React.FC<ImageCanvasProps> = ({
           setTransitionSource(snapshot);
           return;
         }
-      } catch (err) {
+      } catch {
         // Fall through to the JS-engine path below.
       }
     }
