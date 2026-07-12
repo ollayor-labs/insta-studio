@@ -91,7 +91,8 @@ describe("image import", () => {
 
     expect(heicToMock).not.toHaveBeenCalled();
     expect(createObjectUrlMock).toHaveBeenCalledWith(file);
-    expect(revokeObjectUrlMock).toHaveBeenCalledWith("blob:mock-url");
+    // The object URL stays alive on success — image.src is read later by CropModal.
+    expect(revokeObjectUrlMock).not.toHaveBeenCalled();
   });
 
   it("converts HEIC files before loading them", async () => {
@@ -108,7 +109,8 @@ describe("image import", () => {
     });
     expect(createObjectUrlMock).toHaveBeenCalledWith(convertedBlob);
     expect(createObjectUrlMock).not.toHaveBeenCalledWith(file);
-    expect(revokeObjectUrlMock).toHaveBeenCalledWith("blob:mock-url");
+    // The object URL stays alive on success — image.src is read later by CropModal.
+    expect(revokeObjectUrlMock).not.toHaveBeenCalled();
   });
 
   it("falls back to native decode if HEIC conversion fails", async () => {
