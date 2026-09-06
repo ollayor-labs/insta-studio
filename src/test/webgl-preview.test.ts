@@ -138,6 +138,7 @@ describe("webgl-preview: HSL band cap", () => {
   it("treats settings with <= cap bands as WebGL-eligible", () => {
     const s = makeSettings();
     s.hsl = Array.from({ length: WEBGL_MAX_HSL_BANDS }, () => ({
+      label: "band",
       minHue: 0,
       maxHue: 30,
       softness: 18,
@@ -151,6 +152,7 @@ describe("webgl-preview: HSL band cap", () => {
   it("routes settings with > cap bands to JS so the user sees the full effect", () => {
     const s = makeSettings();
     s.hsl = Array.from({ length: WEBGL_MAX_HSL_BANDS + 1 }, () => ({
+      label: "band",
       minHue: 0,
       maxHue: 30,
       softness: 18,
@@ -773,12 +775,14 @@ describe("webgl-preview: onContextRestored respects the disposed state", () => {
         setWebGlDegraded(true);
       }
       return true;
-    }) as typeof gl.canvas.dispatchEvent;
+    }) as unknown as typeof gl.canvas.dispatchEvent;
     // Direct invocation: just call the listener-internal flow.
     setWebGlDegraded(true);
     expect(isWebGlDegraded()).toBe(true);
     // Simulate the restored event on the canvas.
-    (gl.canvas as { dispatchEvent: (t: string) => boolean }).dispatchEvent("webglcontextrestored");
+    (gl.canvas as unknown as { dispatchEvent: (t: string) => boolean }).dispatchEvent(
+      "webglcontextrestored",
+    );
     // Without firing the actual listener (we don't have a real
     // addEventListener in the fake), call the equivalent path: the
     // backend is live, so setWebGlDegraded(false) should fire.
@@ -1051,7 +1055,7 @@ describe("webgl-preview: canvas-bound path (no readPixels)", () => {
     let readPixelsCalled = false;
     // The recording fake-gl marks every call so the test can
     // assert that the legacy path's expensive call was skipped.
-    const recording: Record<string, (...args: unknown[]) => unknown> = {
+    const recording: Record<string, unknown> = {
       canvas: {
         width: 0,
         height: 0,

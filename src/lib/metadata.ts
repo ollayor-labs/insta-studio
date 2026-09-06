@@ -60,11 +60,13 @@ function toDateTime(value: unknown): string | undefined {
  */
 export async function readImageMetadata(input: File | Blob): Promise<ImageMeta | null> {
   try {
+    // exifr always parses IFD0 (its types note it "cannot be disabled"),
+    // so it must not be listed here — requesting it with a boolean is a
+    // type error and has no effect.
     const raw = await exifr.parse(input, {
       tiff: true,
       exif: true,
       gps: true,
-      ifd0: true,
       iptc: true,
     });
     if (!raw) return null;

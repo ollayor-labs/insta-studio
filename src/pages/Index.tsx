@@ -45,7 +45,7 @@ import FilterSidebar from "@/components/FilterSidebar";
 import RawAdjustmentsPanel from "@/components/AdjustmentsPanel";
 import RawToolTabsPanel from "@/components/ToolTabsPanel";
 import RawImageCanvas from "@/components/ImageCanvas";
-import BottomBar from "@/components/BottomBar";
+import RawBottomBar from "@/components/BottomBar";
 import CropModal from "@/components/CropModal";
 import { DEFAULT_CROP_STATE, type CropState } from "@/lib/crop";
 import type { TextLayer } from "@/lib/text/types";
@@ -64,6 +64,7 @@ import { Drawer, DrawerContent, DrawerHeader, DrawerTitle, DrawerTrigger } from 
 const ImageCanvas = React.memo(RawImageCanvas);
 const AdjustmentsPanel = React.memo(RawAdjustmentsPanel);
 const ToolTabsPanel = React.memo(RawToolTabsPanel);
+const BottomBar = React.memo(RawBottomBar);
 const brandMarkSrc = "/brand/logo-mark.png";
 
 const TEXT_INPUT_TYPES = new Set([
@@ -974,6 +975,25 @@ const Index = () => {
     };
   }, [cycleFilter, favorites, handleActivateFavorite, handlePlayReveal, handleRedo, handleReset, handleUndo]);
 
+  // Stable handlers for the memoized child panels. These were previously
+  // inline arrow props, which created fresh function references on every
+  // parent commit (debounced slider ticks, compare-reveal RAF, recents
+  // updates) and defeated the `React.memo` wraps above. `useState`
+  // setters are stable across renders, so these callbacks have empty
+  // dependency arrays and never need to be rebuilt.
+  const handleTextLayerChange = useCallback(
+    (layer: TextLayer) => {
+      setTextLayers((prev) => prev.map((l) => (l.id === layer.id ? layer : l)));
+    },
+    [],
+  );
+  const handleOpenCropEditor = useCallback(() => {
+    setCropModalOpen(true);
+  }, []);
+  const handleOpenCropModal = useCallback(() => {
+    setCropModalOpen(true);
+  }, []);
+
   if (!image) {
     return (
       <div className="min-h-screen flex flex-col bg-background">
@@ -1098,9 +1118,7 @@ const Index = () => {
           textLayers={textLayers}
           selectedTextId={selectedTextId}
           onSelectText={setSelectedTextId}
-          onChangeTextLayer={(layer) =>
-            setTextLayers((prev) => prev.map((l) => (l.id === layer.id ? layer : l)))
-          }
+          onChangeTextLayer={handleTextLayerChange}
           textActive={activeTool === "text"}
         />
 
@@ -1122,7 +1140,7 @@ const Index = () => {
             sourceImage={image}
             cropState={cropState}
             onCropChange={setCropState}
-            onOpenCropEditor={() => setCropModalOpen(true)}
+            onOpenCropEditor={handleOpenCropEditor}
             textLayers={textLayers}
             selectedTextId={selectedTextId}
             onSelectText={setSelectedTextId}
@@ -1193,7 +1211,7 @@ const Index = () => {
         onUndo={handleUndo}
         onRedo={handleRedo}
         cropState={cropState}
-        onOpenCropModal={() => setCropModalOpen(true)}
+        onOpenCropModal={handleOpenCropModal}
         exportProfileId={exportProfileId}
         optimizeForSocial={optimizeForSocial}
         onExportProfileChange={setExportProfileId}

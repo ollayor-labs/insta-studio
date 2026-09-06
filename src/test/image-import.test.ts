@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { heicTo } from "heic-to";
 import {
   IMAGE_INPUT_ACCEPT,
-  ImageImportError,
   isHeicLikeFile,
   isSupportedImageFile,
   loadImportedImage,
@@ -128,7 +127,7 @@ describe("image import", () => {
     heicToMock.mockRejectedValue(new Error("boom"));
     imageLoadOutcomes = [true];
 
-    await expect(loadImportedImage(file)).rejects.toMatchObject<ImageImportError>({
+    await expect(loadImportedImage(file)).rejects.toMatchObject({
       code: "heic-conversion-failed",
       message: "The HEIC image could not be converted.",
     });
@@ -147,7 +146,7 @@ describe("image import", () => {
     imageLoadOutcomes = [true];
     heicToMock.mockRejectedValue(new Error("boom"));
 
-    await expect(loadImportedImage(file)).rejects.toMatchObject<ImageImportError>({
+    await expect(loadImportedImage(file)).rejects.toMatchObject({
       code: "heic-conversion-failed",
       message: "The HEIC image could not be converted.",
     });
@@ -157,7 +156,7 @@ describe("image import", () => {
     const file = new File(["jpeg"], "sample.jpg", { type: "image/jpeg" });
     imageLoadOutcomes = [true];
 
-    await expect(loadImportedImage(file)).rejects.toMatchObject<ImageImportError>({
+    await expect(loadImportedImage(file)).rejects.toMatchObject({
       code: "image-decode-failed",
       message: "The image could not be decoded in this browser.",
     });

@@ -151,7 +151,7 @@ describe("filter engine", () => {
       overexposedLikelihood: 0,
       underexposedLikelihood: 0,
       sceneTags: [],
-    } as const;
+    };
     const recommendations = recommendPresets(analysis, 13);
 
     // The result should be the FILTER_PRESETS list (excluding "original")

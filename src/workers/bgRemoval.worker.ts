@@ -7,11 +7,14 @@
 // (transformers.js uses the Cache Storage API by default).
 //
 // Messages IN:
-//   { type: "init" }
-//   { type: "run", bitmap: ImageBitmap }
+//   { type: "init" }                      // pre-warm: download model, no inference
+//   { type: "run", bitmap: ImageBitmap }  // run inference on the given image
+//
 // Messages OUT:
-//   { type: "progress", value: number }   // 0..100 model download
-//   { type: "ready" }
+//   { type: "progress", phase, value?, loaded?, total?, file? }
+//     — phase: "init" (worker/WASM startup) | "download" (model weights) | "inference"
+//     — value: 0..100 (download phase only); loaded/total: bytes (download phase only)
+//   { type: "ready", device: "webgpu" | "wasm" }
 //   { type: "result", mask: ArrayBuffer, width, height }  // mask transferred
 //   { type: "error", message: string }
 
@@ -34,6 +37,9 @@ let model: any = null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let processor: any = null;
 let initPromise: Promise<void> | null = null;
+// Remember which backend won so we can disclose it to the UI (WASM runs
+// single-threaded without cross-origin isolation — worth surfacing).
+let chosenDevice: "webgpu" | "wasm" = "wasm";
 
 function post(message: unknown, transfer?: Transferable[]) {
   if (transfer && transfer.length) {
@@ -58,13 +64,28 @@ async function ensureInit(): Promise<void> {
 
   initPromise = (async () => {
     const { device, dtype } = pickDeviceOptions();
+    chosenDevice = device as "webgpu" | "wasm";
+
+    // "init" phase covers the worker script fetch + WASM runtime fetch, both
+    // of which are silent (transformers.js reports no progress for them).
+    // Surfacing the phase lets the UI show an honest "Preparing…" state
+    // instead of a 0% bar that looks stuck.
+    post({ type: "progress", phase: "init" });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const progress_callback = (data: any) => {
-      // from_pretrained emits { status, progress, ... } events. We surface
-      // download progress (0..100) so the UI can show a bar.
+      // from_pretrained emits { status, name, file, progress, loaded, total }
+      // events. We forward the byte counts and file name alongside the
+      // percentage so the UI can show "12 MB / 44 MB" rather than a bare %.
       if (data && typeof data.progress === "number") {
-        post({ type: "progress", value: Math.max(0, Math.min(100, data.progress)) });
+        post({
+          type: "progress",
+          phase: "download",
+          value: Math.max(0, Math.min(100, data.progress)),
+          loaded: typeof data.loaded === "number" ? data.loaded : undefined,
+          total: typeof data.total === "number" ? data.total : undefined,
+          file: typeof data.file === "string" ? data.file : undefined,
+        });
       }
     };
 
@@ -80,8 +101,8 @@ async function ensureInit(): Promise<void> {
       progress_callback,
     });
 
-    post({ type: "progress", value: 100 });
-    post({ type: "ready" });
+    post({ type: "progress", phase: "download", value: 100 });
+    post({ type: "ready", device: chosenDevice });
   })();
 
   return initPromise;
@@ -154,8 +175,22 @@ self.onmessage = async (event: MessageEvent) => {
 
        
       const inputs = await processor(rawImage);
-       
-      const output = await model(inputs);
+
+      // transformers.js' AutoProcessor emits the image tensor under the key
+      // `pixel_values` (see node_modules/@huggingface/transformers/src/image_processors_utils.js).
+      // The onnx-community/BiRefNet_lite ONNX export, however, names its single
+      // input `input_image`. AutoModel's `encoder_forward` uses `pick()` which
+      // only selects keys by name (no remapping), so without this rename the
+      // session throws "Missing the following inputs: input_image.".
+      // There is no BiRefNet-specific remapping in transformers.js v4.2.0, so
+      // we do it here.
+      const modelInputs = { ...inputs, input_image: inputs.pixel_values };
+
+      // Inference is a single await with no byte-level progress. Posting an
+      // explicit "inference" phase lets the UI switch from the download bar
+      // to an indeterminate "Processing…" state instead of going blank.
+      post({ type: "progress", phase: "inference" });
+      const output = await model(modelInputs);
 
       const mask = await maskFromOutput(output, width, height);
 

@@ -21,7 +21,9 @@ Object.defineProperty(window, "matchMedia", {
 
 class MockImageData implements ImageData {
   readonly colorSpace = "srgb" as const;
-  readonly data: Uint8ClampedArray;
+  // `ArrayBuffer` backing is required to satisfy lib.dom's
+  // `ImageData.data: Uint8ClampedArray<ArrayBuffer>` under TS 5.7+.
+  readonly data: Uint8ClampedArray<ArrayBuffer>;
   readonly height: number;
   readonly width: number;
 
@@ -29,7 +31,7 @@ class MockImageData implements ImageData {
   // OR (width, height). Tests use the latter; without it, `data.slice()`
   // in the worker broker throws "next.source.data.slice is not a
   // function" because the `data` slot is a number.
-  constructor(dataOrWidth: Uint8ClampedArray | number, widthOrHeight?: number, height?: number) {
+  constructor(dataOrWidth: Uint8ClampedArray<ArrayBuffer> | number, widthOrHeight?: number, height?: number) {
     if (typeof dataOrWidth === "number") {
       const w = dataOrWidth;
       const h = widthOrHeight ?? 1;

@@ -78,21 +78,25 @@ function SliderField({
   min,
   max,
   onChange,
+  unit,
 }: {
   label: string;
   value: number;
   min: number;
   max: number;
   onChange: (value: number) => void;
+  /** Renders the raw value with this suffix (e.g. "%") and no +/- sign; omit for bipolar sliders. */
+  unit?: string;
 }) {
   const isCentered = min < 0;
+  const display = unit ? `${value}${unit}` : value > 0 ? `+${value}` : value;
 
   return (
     <div className="space-y-1 px-1">
       <div className="flex items-center justify-between">
         <span className="font-mono-ui text-[11px] text-muted-foreground">{label}</span>
         <span className="font-mono-ui text-[11px] text-secondary-foreground tabular-nums w-10 text-right">
-          {value > 0 ? `+${value}` : value}
+          {display}
         </span>
       </div>
       <div className="relative">
@@ -265,37 +269,29 @@ const AdjustmentsPanel: React.FC<AdjustmentsPanelProps> = ({
       </div>
 
       <div className="rounded-xl border border-border bg-card/50 px-3 py-3 space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="font-mono-ui text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-            Preset Strength
-          </span>
-          <span className="font-mono-ui text-[11px] text-secondary-foreground tabular-nums">
-            {filterStrength}%
-          </span>
-        </div>
+        <span className="font-mono-ui text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+          Preset Strength
+        </span>
         <SliderField
           label="Strength"
           value={filterStrength}
           min={0}
           max={100}
+          unit="%"
           onChange={onFilterStrengthChange}
         />
       </div>
 
       <div className="rounded-xl border border-border bg-card/50 px-3 py-3 space-y-2">
-        <div className="flex items-center justify-between">
-          <span className="font-mono-ui text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
-            Master Intensity
-          </span>
-          <span className="font-mono-ui text-[11px] text-secondary-foreground tabular-nums">
-            {effectIntensity}%
-          </span>
-        </div>
+        <span className="font-mono-ui text-[11px] uppercase tracking-[0.14em] text-muted-foreground">
+          Master Intensity
+        </span>
         <SliderField
           label="Intensity"
           value={effectIntensity}
           min={0}
           max={100}
+          unit="%"
           onChange={onEffectIntensityChange}
         />
       </div>

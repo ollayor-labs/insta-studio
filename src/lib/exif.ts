@@ -406,10 +406,18 @@ export async function readExifFromBlob(blob: Blob): Promise<Uint8Array | null> {
  */
 export async function withExifInjected(blob: Blob, tiffPayload: Uint8Array | null): Promise<Blob> {
   if (!tiffPayload) return blob;
-  const buffer = await blob.arrayBuffer();
-  const merged = injectExifSegment(new Uint8Array(buffer), blob.type, tiffPayload);
-  if (merged === buffer) return blob;
-  return new Blob([merged], { type: blob.type });
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const merged = injectExifSegment(bytes, blob.type, tiffPayload);
+  // `injectExifSegment` returns `bytes` unchanged when it has nothing to
+  // do (unsupported format). The previous code compared against the raw
+  // ArrayBuffer, which can never match a Uint8Array, so every call
+  // re-wrapped identical bytes in a fresh Blob.
+  if (merged === bytes) return blob;
+  // The bytes can only be ArrayBuffer-backed here (no SharedArrayBuffer
+  // is ever created in this codebase), but TS 5.7+'s typed-array generics
+  // can't see that through the `Uint8Array` (= `ArrayBufferLike`)
+  // signature of `injectExifSegment`.
+  return new Blob([merged as Uint8Array<ArrayBuffer>], { type: blob.type });
 }
 
 /**

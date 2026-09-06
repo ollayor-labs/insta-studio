@@ -442,15 +442,6 @@ describe("isCompleteJpeg", () => {
 // EXIF orientation
 // ---------------------------------------------------------------------------
 
-import {
-  buildJpegWithExif,
-} from "./helpers/test-fixtures";
-
-
-// ---------------------------------------------------------------------------
-// EXIF orientation
-// ---------------------------------------------------------------------------
-
 import { getExifOrientation } from "@/lib/exif";
 
 // Hand-rolled TIFF payload with IFD0 containing a single Orientation tag.

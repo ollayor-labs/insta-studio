@@ -59,6 +59,53 @@ async function run() {
   await page.screenshot({ path: path.join(SHOTS, '02-editor.png') });
   console.log('Saved 02-editor.png');
 
+  // --- Issue 1 verification: hover a preset name to reveal the tooltip. ---
+  const tooltipTarget = page.getByText('Cinematic Mood', { exact: true }).first();
+  if (await tooltipTarget.count()) {
+    await tooltipTarget.hover();
+    // Radix delayDuration is 300ms; wait for the tooltip to reach the open state.
+    const openTip = page
+      .locator('[role="tooltip"]:not([data-state="closed"])')
+      .first();
+    await openTip.waitFor({ state: 'visible', timeout: 5000 });
+    await page.waitForTimeout(400); // let the open animation settle
+    await page.screenshot({ path: path.join(SHOTS, '09-preset-tooltip.png') });
+    console.log('Saved 09-preset-tooltip.png');
+    const tipText = await openTip.textContent().catch(() => null);
+    console.log('Preset tooltip text:', JSON.stringify(tipText));
+    // Move the pointer away so the tooltip closes before the next step.
+    await page.mouse.move(10, 10);
+    await page.waitForTimeout(500);
+
+    // Hover a recommended preset (gold dot) to verify its tooltip tag.
+    const recTarget = page.getByText('Clean Luxury', { exact: true }).first();
+    if (await recTarget.count()) {
+      await recTarget.hover();
+      const recOpenTip = page
+        .locator('[role="tooltip"]:not([data-state="closed"])')
+        .first();
+      await recOpenTip.waitFor({ state: 'visible', timeout: 5000 });
+      await page.waitForTimeout(400);
+      await page.screenshot({ path: path.join(SHOTS, '10-recommended-tooltip.png') });
+      console.log('Saved 10-recommended-tooltip.png');
+      const recTip = await recOpenTip.textContent().catch(() => null);
+      console.log('Recommended tooltip text:', JSON.stringify(recTip));
+      console.log(
+        'Has "Recommended for this photo" tag:',
+        recTip ? recTip.includes('Recommended for this photo') : false,
+      );
+      await page.mouse.move(10, 10);
+      await page.waitForTimeout(500);
+    }
+  }
+
+  // Issue 3 sanity checks: no BEST badges, no "Recommended" section heading.
+  const bestBadges = await page.getByText(/^Best$/i).count();
+  const recommendedHeading = await page.getByText(/^Recommended$/i).count();
+  console.log('BEST badge count:', bestBadges, '| "Recommended" heading count:', recommendedHeading);
+
+  // Open Crop modal.
+
   // Open Crop modal.
   const cropBtn = page.locator('button').filter({ hasText: /^Crop$/i }).first();
   if (await cropBtn.count()) {

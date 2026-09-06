@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from "react";
-import { Scissors, Sparkles, Check, ImageOff } from "lucide-react";
+import React, { useEffect, useMemo, useState } from "react";
+import { Scissors, Sparkles, Check, ImageOff, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { useBackgroundRemoval } from "@/hooks/useBackgroundRemoval";
@@ -7,6 +7,7 @@ import {
   compositeCutout,
   type CutoutBackground,
 } from "@/lib/cutout";
+import { formatFileSize } from "@/lib/fileSize";
 
 export interface CutoutToolProps {
   sourceImage: HTMLImageElement | null;
@@ -36,15 +37,38 @@ const PRESET_COLORS: { label: string; color: string }[] = [
  * otherwise).
  */
 const CutoutTool: React.FC<CutoutToolProps> = ({ sourceImage, onApply }) => {
-  const { removeBackground, progress, status, error } = useBackgroundRemoval();
+  const {
+    removeBackground,
+    warmup,
+    progress,
+    phase,
+    device,
+    loaded,
+    total,
+    status,
+    error,
+  } = useBackgroundRemoval();
   const [maskState, setMaskState] = useState<MaskState | null>(null);
   const [background, setBackground] = useState<CutoutBackground>({
     kind: "transparent",
   });
   const [customColor, setCustomColor] = useState("#D4A574");
 
+  // Pre-fetch the model as soon as the user opens the Cutout tab — this
+  // hides the silent worker-script + WASM fetches behind their exploration
+  // of the panel, so the first "Remove background" click responds faster.
+  useEffect(() => {
+    warmup();
+  }, [warmup]);
+
   const isBusy = status === "loading" || status === "running";
-  const isDownloading = status === "loading" && progress < 100;
+  const isPreparing = status === "loading" && phase === "init";
+  const isDownloading = status === "loading" && phase === "download";
+  const isInferring = (status === "running") || (status === "loading" && phase === "inference");
+
+  // WASM runs single-threaded without cross-origin isolation — call it out
+  // so the user knows inference may take a while.
+  const isCpuMode = device === "wasm";
 
   const disabled = !sourceImage;
 
@@ -119,6 +143,25 @@ const CutoutTool: React.FC<CutoutToolProps> = ({ sourceImage, onApply }) => {
     );
   }
 
+  // Build the active status caption. Order matters: inference > download >
+  // preparing, because the worker posts an explicit "inference" phase that
+  // arrives after the download finishes.
+  const statusLabel = isInferring
+    ? "Processing…"
+    : isDownloading
+      ? "Downloading model…"
+      : isPreparing
+        ? "Preparing AI engine…"
+        : null;
+
+  // Byte readout for the download phase, when the worker reports bytes.
+  const byteReadout =
+    isDownloading && loaded != null && total != null && total > 0
+      ? `${formatFileSize(loaded)} / ${formatFileSize(total)}`
+      : isDownloading
+        ? `${Math.round(progress)}%`
+        : null;
+
   return (
     <div className="w-full h-full overflow-y-auto p-3 space-y-4">
       <div className="flex items-center gap-2 px-1">
@@ -139,25 +182,56 @@ const CutoutTool: React.FC<CutoutToolProps> = ({ sourceImage, onApply }) => {
         {isBusy
           ? isDownloading
             ? "Downloading model…"
-            : "Processing…"
+            : isInferring
+              ? "Processing…"
+              : "Preparing…"
           : maskState
             ? "Re-run removal"
             : "Remove background"}
       </Button>
 
-      {isDownloading && (
-        <div className="space-y-1 px-1">
-          <Progress value={progress} className="h-2" />
-          <p className="text-right font-mono-ui text-[10px] tracking-[0.12em] text-muted-foreground">
-            {Math.round(progress)}%
+      {/* Preparing phase: worker + WASM fetch are silent (no byte progress),
+          so show an indeterminate spinner instead of a stuck 0% bar. */}
+      {isPreparing && (
+        <div className="flex items-center gap-2 px-1">
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+          <p className="font-mono-ui text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+            {statusLabel}
           </p>
         </div>
       )}
 
-      {status === "running" && (
-        <p className="px-1 font-mono-ui text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
-          Processing…
-        </p>
+      {/* Download phase: the only phase with real byte-level progress. */}
+      {isDownloading && (
+        <div className="space-y-1 px-1">
+          <Progress value={progress} className="h-2" />
+          <div className="flex items-center justify-between">
+            <p className="font-mono-ui text-[10px] tracking-[0.12em] text-muted-foreground">
+              {byteReadout}
+            </p>
+            <p className="font-mono-ui text-[10px] tracking-[0.12em] text-muted-foreground">
+              {Math.round(progress)}%
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Inference phase: no byte progress available — show an indeterminate
+          spinner with the device hint so the user knows it's still working. */}
+      {isInferring && (
+        <div className="space-y-1 px-1">
+          <div className="flex items-center gap-2">
+            <Loader2 className="h-3.5 w-3.5 animate-spin text-primary" />
+            <p className="font-mono-ui text-[10px] uppercase tracking-[0.14em] text-muted-foreground">
+              {statusLabel}
+            </p>
+          </div>
+          {isCpuMode && (
+            <p className="font-mono-ui text-[10px] tracking-[0.12em] text-muted-foreground/80">
+              Running on CPU — this may take a bit
+            </p>
+          )}
+        </div>
       )}
 
       {error && (

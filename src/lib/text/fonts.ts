@@ -1,9 +1,10 @@
-// Importing the fontsource CSS here ensures the @font-face rules are pulled in
-// wherever fonts.ts is imported (we intentionally do not edit main.tsx).
-import "@fontsource/inter";
-import "@fontsource/oswald";
-import "@fontsource/bebas-neue";
-import "@fontsource/playfair-display";
+// Importing the latin subset only keeps the text-overlay bundle small; the
+// editor UI is latin-only, and full cyrillic/greek/vietnamese subsets would
+// ship unused glyphs. @fontsource/<family>/latin.css pulls just `latin`.
+import "@fontsource/inter/latin.css";
+import "@fontsource/oswald/latin.css";
+import "@fontsource/bebas-neue/latin.css";
+import "@fontsource/playfair-display/latin.css";
 
 export interface FontOption {
   label: string;

@@ -36,5 +36,44 @@ export default defineConfig(async ({ mode }) => {
         "@": path.resolve(__dirname, "./src"),
       },
     },
+    build: {
+      rollupOptions: {
+        output: {
+          // Split stable third-party deps into their own chunks so that
+          // app-code changes don't invalidate the browser cache for the
+          // vendor code, and the browser can parallelize downloads.
+          manualChunks: (id: string) => {
+            if (!id.includes("node_modules")) return;
+            // konva/react-konva: large canvas lib, shared between the main
+            // bundle (renderTextLayers) and the lazy TextOverlay chunk.
+            // Splitting avoids duplication and keeps it cacheable.
+            if (
+              id.includes("/konva/") ||
+              id.includes("react-konva")
+            ) {
+              return "konva";
+            }
+            // Radix UI primitives — 10 packages, change only on dep bumps.
+            if (id.includes("@radix-ui")) return "radix";
+            // EXIF parsing — exifr is sizable; isolating it keeps it out of
+            // the main parse/eval path even though it's imported eagerly.
+            if (id.includes("/exifr/") || id.includes("/piexifjs/")) {
+              return "imaging";
+            }
+            // React runtime + router + query — the most stable deps,
+            // rarely change between app updates.
+            if (
+              id.includes("/react/") ||
+              id.includes("/react-dom/") ||
+              id.includes("/scheduler/") ||
+              id.includes("react-router") ||
+              id.includes("@tanstack/react-query")
+            ) {
+              return "react-vendor";
+            }
+          },
+        },
+      },
+    },
   };
 });

@@ -801,7 +801,7 @@ export class WebGlBackend implements PreviewBackend {
     gl.bindVertexArray(null);
   }
 
-  private readPixels(): Uint8ClampedArray {
+  private readPixels(): Uint8ClampedArray<ArrayBuffer> {
     const gl = this.gl;
     if (!gl) throw new Error('WebGL context unavailable');
     const pixels = new Uint8ClampedArray(this.fbWidth * this.fbHeight * 4);

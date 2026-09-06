@@ -198,10 +198,10 @@ cost an `objectURL` round trip per file.
 
 ## CI
 
-The Blacksmith workflow at
-[`.github/workflows/blacksmith-ci-cd.yml`](/Users/ollayor/Code/Projects/filtr-studio/.github/workflows/blacksmith-ci-cd.yml)
-runs `npm test`, `npm run lint`, and `npm run build` on every PR and
-push to `main`. A `deploy` job promotes `main` to Vercel production.
+The workflow at [`.github/workflows/ci-cd.yml`](.github/workflows/ci-cd.yml)
+runs `pnpm run verify` (`lint`, `test`, `build`) on every PR and push to
+`main`, plus on manual dispatch. There is no deploy job — production
+promotion is handled outside CI (Vercel).
 
 ## Visual Guide
 

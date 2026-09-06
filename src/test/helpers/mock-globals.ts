@@ -8,11 +8,13 @@ import { vi } from "vitest";
 
 class MockImageData implements ImageData {
   readonly colorSpace = "srgb";
-  readonly data: Uint8ClampedArray;
+  // `ArrayBuffer` backing is required to satisfy lib.dom's
+  // `ImageData.data: Uint8ClampedArray<ArrayBuffer>` under TS 5.7+.
+  readonly data: Uint8ClampedArray<ArrayBuffer>;
   readonly height: number;
   readonly width: number;
 
-  constructor(data: Uint8ClampedArray | number[], width: number, height: number) {
+  constructor(data: Uint8ClampedArray<ArrayBuffer> | number[], width: number, height: number) {
     this.data = data instanceof Uint8ClampedArray ? data : Uint8ClampedArray.from(data);
     this.width = width;
     this.height = height;

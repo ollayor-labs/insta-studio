@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useRef } from "react";
 import type { FavoritesMap, FavoriteSlot } from "@/lib/filterEngine";
 import { Trash2 } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cuePressRelease } from "@/lib/sound/sound-cues";
 import {
   customPresetsToDefinitions,
   FILTER_PRESETS,
   generateSwatchData,
-  getFilterPresetById,
   type CustomPresetRecord,
   type ImageAnalysis,
 } from "@/lib/filterEngine";
@@ -79,20 +79,19 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
     }
   }, [sampleData, sourceAnalysis, swatchSize, customDefinitions]);
 
-  const recommendedPresets = useMemo(
-    () => recommendedPresetIds.map((presetId) => getFilterPresetById(presetId)),
+  const recommendedPresetIdSet = useMemo(
+    () => new Set(recommendedPresetIds),
     [recommendedPresetIds],
   );
 
   const categories = useMemo(() => {
     const grouped = new Map<string, typeof FILTER_PRESETS>();
     FILTER_PRESETS.forEach((preset) => {
-      if (recommendedPresetIds.includes(preset.id)) return;
       if (!grouped.has(preset.category)) grouped.set(preset.category, []);
       grouped.get(preset.category)?.push(preset);
     });
     return grouped;
-  }, [recommendedPresetIds]);
+  }, []);
 
   const findFavoriteSlot = (presetId: string): FavoriteSlot | undefined => {
     for (const slot of [1, 2, 3, 4, 5, 6, 7, 8, 9] as const) {
@@ -101,15 +100,11 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
     return undefined;
   };
 
-  const renderPresetCard = (
-    presetName: string,
-    recommended = false,
-    deletable = false,
-    onDelete?: () => void,
-  ) => {
+  const renderPresetCard = (presetName: string, deletable = false, onDelete?: () => void) => {
     const preset = [...FILTER_PRESETS, ...customDefinitions].find((entry) => entry.name === presetName);
     if (!preset) return null;
     const favoriteSlot = findFavoriteSlot(preset.id);
+    const isRecommended = recommendedPresetIdSet.has(preset.id);
 
     const handleClick = (event: React.MouseEvent<HTMLButtonElement>) => {
       if (event.shiftKey && onToggleFavorite) {
@@ -130,11 +125,6 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
         <button
           type="button"
           onClick={handleClick}
-          title={
-            onToggleFavorite
-              ? `${preset.name} — shift-click to ${favoriteSlot ? "remove from" : "add to"} favorites`
-              : preset.name
-          }
           className="flex w-full flex-col text-left"
           {...cuePressRelease}
         >
@@ -147,11 +137,6 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
               height={swatchSize}
               className="w-full aspect-square rounded-t-lg"
             />
-            {recommended ? (
-              <span className="absolute top-1 right-1 rounded-full bg-primary/90 px-1.5 py-0.5 font-mono-ui text-[8px] uppercase tracking-[0.14em] text-primary-foreground">
-                Best
-              </span>
-            ) : null}
             {favoriteSlot ? (
               <span
                 className="absolute top-1 left-1 inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary/90 font-mono-ui text-[10px] font-semibold text-primary-foreground shadow-sm"
@@ -169,9 +154,39 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
             ) : null}
           </div>
           <div className="px-1.5 py-1.5 space-y-0.5">
-            <span className="font-mono-ui text-[10px] text-secondary-foreground group-hover:text-primary transition-colors truncate block">
-              {preset.name}
-            </span>
+            <Tooltip delayDuration={300}>
+              <TooltipTrigger asChild>
+                <div className="flex items-center gap-1 min-w-0">
+                  {isRecommended ? (
+                    <span
+                      aria-hidden="true"
+                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
+                    />
+                  ) : null}
+                  <span className="flex-1 min-w-0 truncate font-mono-ui text-[10px] text-secondary-foreground group-hover:text-primary transition-colors">
+                    {preset.name}
+                  </span>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent
+                side="top"
+                align="start"
+                className="max-w-[13rem] border-border bg-popover p-2.5 text-foreground"
+              >
+                <p className="font-mono-ui text-[11px] text-foreground">{preset.name}</p>
+                {isRecommended ? (
+                  <p className="mt-0.5 font-mono-ui text-[9px] uppercase tracking-[0.12em] text-primary">
+                    Recommended for this photo
+                  </p>
+                ) : null}
+                <p className="mt-0.5 text-[10px] leading-snug text-muted-foreground">{preset.mood}</p>
+                {onToggleFavorite ? (
+                  <p className="mt-1 text-[9px] leading-snug text-muted-foreground/80">
+                    Shift-click to {favoriteSlot ? "remove from" : "add to"} favorites
+                  </p>
+                ) : null}
+              </TooltipContent>
+            </Tooltip>
             <span className="text-[9px] leading-tight text-muted-foreground block truncate">
               {preset.mood}
             </span>
@@ -207,7 +222,6 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
             {customDefinitions.map((preset, index) =>
               renderPresetCard(
                 preset.name,
-                false,
                 true,
                 () => onDeleteCustomPreset(customPresets[index].id),
               ),
@@ -223,17 +237,6 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
               Premium presets with adaptive behavior tuned for portraits, food, lifestyle, street, and indoor scenes.
             </p>
           </div>
-
-          {recommendedPresets.length > 0 ? (
-            <div className="space-y-2">
-              <p className="font-mono-ui text-[10px] uppercase tracking-[0.15em] text-primary px-1">
-                Recommended
-              </p>
-              <div className="grid grid-cols-3 gap-1.5">
-                {recommendedPresets.map((preset) => renderPresetCard(preset.name, true))}
-              </div>
-            </div>
-          ) : null}
 
           {Array.from(categories.entries()).map(([category, presets]) => (
             <div key={category} className="space-y-2">
@@ -255,7 +258,6 @@ const FilterSidebar: React.FC<FilterSidebarProps> = ({
                 {customDefinitions.map((preset, index) =>
                   renderPresetCard(
                     preset.name,
-                    false,
                     true,
                     () => onDeleteCustomPreset(customPresets[index].id),
                   ),

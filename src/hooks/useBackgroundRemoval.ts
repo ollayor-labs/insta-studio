@@ -6,27 +6,54 @@ export interface BgRemovalResult {
   height: number;
 }
 
+export type BgRemovalPhase = "init" | "download" | "inference";
+
 export interface UseBackgroundRemoval {
   removeBackground: (
     source: HTMLImageElement | ImageBitmap,
   ) => Promise<BgRemovalResult>;
-  progress: number; // 0..100 model download
+  /**
+   * Pre-warm the worker and start the model download without running
+   * inference. Safe to call multiple times — no-ops once loading has begun.
+   * Call this on Cutout-tab open so the ~44MB download starts as soon as the
+   * user shows intent, hiding the silent worker-script + WASM fetches behind
+   * their exploration of the panel.
+   */
+  warmup: () => void;
+  /** 0..100 model download percentage (download phase only). */
+  progress: number;
+  /** Which phase is active — drives the spinner-vs-bar choice in the UI. */
+  phase: BgRemovalPhase | null;
+  /** Backend the model loaded on; surfaced so the UI can hint CPU mode. */
+  device: "webgpu" | "wasm" | null;
+  /** Bytes downloaded so far in the current download phase (if reported). */
+  loaded: number | null;
+  /** Total bytes for the current download phase (if reported). */
+  total: number | null;
   status: "idle" | "loading" | "running" | "ready" | "error";
   error: string | null;
 }
 
 type WorkerOut =
-  | { type: "progress"; value: number }
-  | { type: "ready" }
+  | {
+      type: "progress";
+      phase: BgRemovalPhase;
+      value?: number;
+      loaded?: number;
+      total?: number;
+      file?: string;
+    }
+  | { type: "ready"; device: "webgpu" | "wasm" }
   | { type: "result"; mask: ArrayBuffer; width: number; height: number }
   | { type: "error"; message: string };
 
 /**
  * React hook wrapping the on-device background-removal worker.
  *
- * The worker (and thus the ~44MB model download) is created lazily on the
- * first `removeBackground` call, so nothing loads until the user opts in.
- * The worker is reused across calls and terminated on unmount.
+ * The worker (and thus the ~44MB model download) is created lazily — either
+ * on the first `removeBackground` call, or earlier via `warmup()` (e.g. when
+ * the user opens the Cutout tab). The worker is reused across calls and
+ * terminated on unmount.
  */
 export function useBackgroundRemoval(): UseBackgroundRemoval {
   const workerRef = useRef<Worker | null>(null);
@@ -37,6 +64,10 @@ export function useBackgroundRemoval(): UseBackgroundRemoval {
   } | null>(null);
 
   const [progress, setProgress] = useState(0);
+  const [phase, setPhase] = useState<BgRemovalPhase | null>(null);
+  const [device, setDevice] = useState<"webgpu" | "wasm" | null>(null);
+  const [loaded, setLoaded] = useState<number | null>(null);
+  const [total, setTotal] = useState<number | null>(null);
   const [status, setStatus] = useState<UseBackgroundRemoval["status"]>("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -60,14 +91,28 @@ export function useBackgroundRemoval(): UseBackgroundRemoval {
       const msg = event.data;
       switch (msg.type) {
         case "progress":
-          setProgress(msg.value);
+          setPhase(msg.phase);
+          if (typeof msg.value === "number") {
+            setProgress(Math.max(0, Math.min(100, msg.value)));
+          }
+          setLoaded(typeof msg.loaded === "number" ? msg.loaded : null);
+          setTotal(typeof msg.total === "number" ? msg.total : null);
           break;
         case "ready":
-          setStatus((s) => (s === "loading" ? "ready" : s));
+          setDevice(msg.device);
+          // First-run fix: if a run is pending (the user clicked "Remove
+          // background" while the model was still downloading), the model
+          // has just finished warming and inference is about to start —
+          // transition to "running" so the UI shows the Processing state
+          // instead of reverting to an idle-looking ready.
+          setStatus((s) =>
+            pendingRef.current ? "running" : s === "loading" ? "ready" : s,
+          );
           break;
         case "result": {
           const pending = pendingRef.current;
           pendingRef.current = null;
+          setPhase(null);
           setStatus("ready");
           if (pending) {
             pending.resolve({
@@ -102,6 +147,13 @@ export function useBackgroundRemoval(): UseBackgroundRemoval {
     return worker;
   }, []);
 
+  const warmup = useCallback((): void => {
+    const worker = getWorker();
+    setError(null);
+    setStatus((s) => (s === "idle" ? "loading" : s));
+    worker.postMessage({ type: "init" });
+  }, [getWorker]);
+
   const removeBackground = useCallback(
     async (source: HTMLImageElement | ImageBitmap): Promise<BgRemovalResult> => {
       if (pendingRef.current) {
@@ -135,5 +187,15 @@ export function useBackgroundRemoval(): UseBackgroundRemoval {
     [getWorker],
   );
 
-  return { removeBackground, progress, status, error };
+  return {
+    removeBackground,
+    warmup,
+    progress,
+    phase,
+    device,
+    loaded,
+    total,
+    status,
+    error,
+  };
 }

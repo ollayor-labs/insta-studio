@@ -44,7 +44,10 @@ export class HistoryStore<T> {
   private redoEntries: HistoryEntry<T>[] = [];
   private currentState: T;
   private readonly capacity: number;
-  private readonly seedOnCommit: boolean;
+  // Mutable (not `readonly`): `reset(state, { seed: false })` opts the
+  // next commit out of auto-seeding, which requires flipping this after
+  // construction.
+  private seedOnCommit: boolean;
   private readonly equal: HistoryEqual<T>;
   private interactionStart: T | null = null;
   private seeded = false;
