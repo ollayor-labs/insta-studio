@@ -18,6 +18,10 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `recommendPresets` tie-break is now ASCII-stable (no more `localeCompare` locale dependence).
 - PNG `eXIf` CRC test sign fix (the implementation is correct; the test was reassembling bytes into a signed int).
 - Legacy EXIF normalize test fixture: the segment length byte was 0x0e but the payload was 8 bytes — corrected to 0x10.
+- Filter sidebar UX pass (grid and strip layouts):
+  - Truncated preset names now reveal a tooltip on hover (Radix, 300ms delay) with the full name, the preset's mood, and a Shift-click favorites hint; recommended presets additionally show a "Recommended for this photo" tag. `TooltipContent` now renders through `TooltipPrimitive.Portal` (matching `popover.tsx`) so the preset cards' `overflow: hidden` / hover-transform can no longer clip or misplace the bubble.
+  - Preset Strength / Master Intensity sliders displayed the percentage value twice; the duplicate render was removed so each slider shows a single `100%`.
+  - Flattened the sidebar's triple hierarchy: the "Recommended" section heading and per-preset BEST badges are gone. Recommended presets are marked with a small gold dot (`bg-primary`) next to their name, and the recommendation reason lives in the preset tooltip.
 
 ### Added
 - New **Umbra** preset (`id: umbra`, Moody category): dark autumn look — brilliance −50, shadows +40, contrast +5, saturation −31, warmth +3, tint −5, sharpness +14, definition +5 (engine keys: `brightness`, `shadows`, `contrast`, `saturation`, `temperature`, `tint`, `sharpness`, `clarity`). Registered at full default strength so the recipe applies verbatim, with matching curve/split-tone/HSL shaping, adaptive tuning, and scene affinity for the recommender. Covered by `src/test/umbra-preset.test.ts`.

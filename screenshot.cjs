@@ -59,14 +59,22 @@ async function run() {
   await page.screenshot({ path: path.join(SHOTS, '02-editor.png') });
   console.log('Saved 02-editor.png');
 
+  // Radix renders two elements per tooltip: a persistent 1x1px visually-hidden
+  // <span role="tooltip"> (aria description) and the visible bubble that carries
+  // data-state="delayed-open" inside [data-radix-popper-content-wrapper]. Scope
+  // to the wrapper so we only ever match the visible bubble.
+  const openTipLocator = (name) =>
+    page
+      .locator('[data-radix-popper-content-wrapper] [role="tooltip"]')
+      .filter({ hasText: name })
+      .first();
+
   // --- Issue 1 verification: hover a preset name to reveal the tooltip. ---
   const tooltipTarget = page.getByText('Cinematic Mood', { exact: true }).first();
   if (await tooltipTarget.count()) {
     await tooltipTarget.hover();
-    // Radix delayDuration is 300ms; wait for the tooltip to reach the open state.
-    const openTip = page
-      .locator('[role="tooltip"]:not([data-state="closed"])')
-      .first();
+    // Radix delayDuration is 300ms; wait for the visible bubble to appear.
+    const openTip = openTipLocator('Cinematic Mood');
     await openTip.waitFor({ state: 'visible', timeout: 5000 });
     await page.waitForTimeout(400); // let the open animation settle
     await page.screenshot({ path: path.join(SHOTS, '09-preset-tooltip.png') });
@@ -78,12 +86,19 @@ async function run() {
     await page.waitForTimeout(500);
 
     // Hover a recommended preset (gold dot) to verify its tooltip tag.
+    // A second tooltip in the same session is flaky in Radix (the aria span of
+    // the previous tooltip lingers and swallows the hover), so re-upload the
+    // test image to get a fresh page state before hovering.
     const recTarget = page.getByText('Clean Luxury', { exact: true }).first();
     if (await recTarget.count()) {
-      await recTarget.hover();
-      const recOpenTip = page
-        .locator('[role="tooltip"]:not([data-state="closed"])')
-        .first();
+      // Reload to the dropzone so the file input is mounted, then re-upload.
+      await page.goto(URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForTimeout(2000);
+      const fileInput = page.locator('input[type="file"]').first();
+      await fileInput.setInputFiles(pngPath);
+      await page.waitForTimeout(4000);
+      await page.getByText('Clean Luxury', { exact: true }).first().hover();
+      const recOpenTip = openTipLocator('Clean Luxury');
       await recOpenTip.waitFor({ state: 'visible', timeout: 5000 });
       await page.waitForTimeout(400);
       await page.screenshot({ path: path.join(SHOTS, '10-recommended-tooltip.png') });
